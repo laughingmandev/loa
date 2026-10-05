@@ -46,7 +46,7 @@ func NewLocalEmbedder(modelPath string) (Embedder, error) {
 		return nil, fmt.Errorf("failed to load model: %w", err)
 	}
 
-	ctx, err := model.NewContext(llama.WithContext(8192), llama.WithEmbeddings())
+	ctx, err := model.NewContext(llama.WithContext(0), llama.WithEmbeddings())
 	if err != nil {
 		model.Close()
 		return nil, fmt.Errorf("failed to create context: %w", err)
