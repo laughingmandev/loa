@@ -46,7 +46,10 @@ func NewLocalEmbedder(modelPath string) (Embedder, error) {
 		return nil, fmt.Errorf("failed to load model: %w", err)
 	}
 
-	ctx, err := model.NewContext(llama.WithContext(8192), llama.WithEmbeddings())
+	// Omit WithContext: llama-go sizes the window from the model's native GGUF
+	// context length (llama_wrapper_get_model_context_length). A hardcoded 8192
+	// only matched the development model and failed init on smaller windows (#27).
+	ctx, err := model.NewContext(llama.WithEmbeddings())
 	if err != nil {
 		model.Close()
 		return nil, fmt.Errorf("failed to create context: %w", err)
