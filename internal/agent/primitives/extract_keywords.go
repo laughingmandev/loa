@@ -35,8 +35,15 @@ func NewExtractKeywordsPrimitive(cfg config.Config, llmClient llm.Client, baseSy
 
 func (p *ExtractKeywordsPrimitive) Execute(ctx context.Context, pc PrimitiveContext, in ExtractKeywordsInput) (KeywordExtraction, error) {
 	var ext KeywordExtraction
-	ctxText := pc.Build(nil, nil, true)
-	user := ctxText + "\nPRIMITIVE INSTRUCTIONS:\n" + extractKeywordsPrompt + "\n\nPRIMITIVE INPUT:\n" + in.Text
+	req := PromptRequest{
+		PrimitiveInstructions: extractKeywordsPrompt,
+		PrimitiveInput:        in.Text,
+		Step:                  nil,
+		Extras:                nil,
+		IncludeInstructions:   true,
+		GlobalPlanView:        true,
+	}
+	user := pc.BuildPrompt(req)
 
 	attempts, err := p.llm.ChatJSON(
 		ctx,

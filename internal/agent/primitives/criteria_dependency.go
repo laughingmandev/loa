@@ -44,14 +44,19 @@ func NewCriteriaDependencyPrimitive(cfg config.Config, llmClient llm.Client, bas
 }
 
 func (p *CriteriaDependencyPrimitive) Execute(ctx context.Context, pc PrimitiveContext, in CriteriaDependencyInput) (CriteriaDependencyResult, error) {
-	ctxText := pc.Build(nil, nil, true)
-	
 	criteriaJSON := ""
 	for _, c := range in.Criteria {
 		criteriaJSON += fmt.Sprintf(`{"id": %d, "requirement": "%s"}`+"\n", c.ID, c.Requirement)
 	}
 
-	user := ctxText + "\nPRIMITIVE INSTRUCTIONS:\n" + criteriaDependencyPrompt + "\n\nCRITERIA TO EVALUATE:\n" + criteriaJSON
+	req := PromptRequest{
+		PrimitiveInstructions: criteriaDependencyPrompt,
+		PrimitiveInputLabel:   "\nCRITERIA TO EVALUATE:\n",
+		PrimitiveInput:        criteriaJSON,
+		IncludeInstructions:   true,
+		GlobalPlanView:        true,
+	}
+	user := pc.BuildPrompt(req)
 
 	var out CriteriaDependencyResult
 	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelPlanning, p.baseSystem, user, &out, func() error {

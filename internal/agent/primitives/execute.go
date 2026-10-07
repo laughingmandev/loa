@@ -62,19 +62,6 @@ func (p *ExecuteStepPrimitive) Execute(ctx context.Context, pc PrimitiveContext,
 	stepJSONBytes, _ := json.Marshal(in.Step)
 	purpose := fmt.Sprintf("CURRENT STEP:\n%s\n\nAVAILABLE TOOLS:\n%s", string(stepJSONBytes), tools.ToolSchema(in.ReadOnly))
 
-	ctxText := pc.Build(&in.Step, in.Extras, true)
-	
-	if in.PinnedEvaluation != "" {
-		ctxText += "\n=== PINNED EVALUATION (Your current goal) ===\n" + in.PinnedEvaluation + "\n=============================================\n"
-	}
-	if len(in.BlindTrail) > 0 {
-		ctxText += "\n=== ACTIONS TAKEN SINCE LAST EVALUATION ===\n"
-		for _, bt := range in.BlindTrail {
-			ctxText += bt + "\n"
-		}
-		ctxText += "===========================================\n"
-	}
-
 	prompt := executePrompt
 	if evalMode == "Dynamic" {
 		prompt += `
@@ -87,7 +74,17 @@ func (p *ExecuteStepPrimitive) Execute(ctx context.Context, pc PrimitiveContext,
 FAST LANE RULE: You are operating in Fast Lane mode. There will be NO final synthesis step to clean up your work. If your task requires outputting massive amounts of data, you MUST use artifact_write/append/patch to use an artifact as a scratchpad. If you create multiple scratchpad artifacts, you are solely responsible for consolidating them into a single final artifact BEFORE you call step_complete. Your step_complete claim should simply act as a pointer (e.g., 'I extracted the data and saved it to final_report.md'). Do NOT attempt to cram massive data into your completion summary.`
 	}
 
-	user := ctxText + "\nPRIMITIVE INSTRUCTIONS:\n" + prompt + "\n\nPRIMITIVE INPUT:\n" + purpose
+	req := PromptRequest{
+		PrimitiveInstructions: prompt,
+		PrimitiveInput:        purpose,
+		Step:                  &in.Step,
+		Extras:                in.Extras,
+		IncludeInstructions:   true,
+		GlobalPlanView:        true,
+		PinnedEvaluation:      in.PinnedEvaluation,
+		BlindTrail:            in.BlindTrail,
+	}
+	user := pc.BuildPrompt(req)
 
 	var out ExecutionDecision
 	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelExecuting, p.baseSystem, user, &out, func() error {

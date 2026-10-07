@@ -69,7 +69,8 @@ func (c *OpenAICompatible) Models(ctx context.Context) ([]string, error) {
 }
 
 func (c *OpenAICompatible) ChatText(ctx context.Context, model, system, user string) (string, error) {
-	return c.chat(ctx, model, system, user, false)
+	messages := []map[string]string{{"role": "system", "content": system}, {"role": "user", "content": user}}
+	return c.chat(ctx, model, messages, false)
 }
 
 func (c *OpenAICompatible) ChatJSON(ctx context.Context, model, system, user string, out any, validate func() error) ([]Attempt, error) {
@@ -79,16 +80,22 @@ func (c *OpenAICompatible) ChatJSON(ctx context.Context, model, system, user str
 		max = 1
 	}
 	attempts := make([]Attempt, 0, max)
-	prompt := user
 	kind := "original"
+	
+	var messages []map[string]string
+	messages = []map[string]string{{"role": "system", "content": system}, {"role": "user", "content": user}}
+	
+	// We only keep the text prompt for logging purposes
+	logPrompt := user
+	
 	for i := 0; i < max; i++ {
-		raw, err := c.chat(ctx, model, system, prompt, true)
-		att := Attempt{PromptKind: kind, Prompt: prompt, Raw: raw}
+		raw, err := c.chat(ctx, model, messages, true)
+		att := Attempt{PromptKind: kind, Prompt: logPrompt, Raw: raw}
 		if err != nil {
 			att.Error = err.Error()
 			attempts = append(attempts, att)
 			if strings.Contains(err.Error(), "model output was truncated") {
-				prompt = repairPrompt(user, raw, att.Error)
+				messages, logPrompt = appendRepairMessage(messages, raw, att.Error, c.Config().ContextBudget)
 				kind = "repair"
 				continue
 			}
@@ -110,7 +117,7 @@ func (c *OpenAICompatible) ChatJSON(ctx context.Context, model, system, user str
 			att.Error = err.Error()
 		}
 		attempts = append(attempts, att)
-		prompt = repairPrompt(user, raw, att.Error)
+		messages, logPrompt = appendRepairMessage(messages, raw, att.Error, c.Config().ContextBudget)
 		kind = "repair"
 	}
 	return attempts, fmt.Errorf("structured response invalid after %d attempts", max)
@@ -143,35 +150,71 @@ func decodeStrict(raw string, out any) error {
 	return nil
 }
 
-func repairPrompt(original, raw, parseErr string) string {
-	return fmt.Sprintf(`Your previous response did not match the required JSON structure or validation rules.
-Repair only what is needed to satisfy the original request and validation error. Return ONLY one JSON object, no markdown.
+func appendRepairMessage(messages []map[string]string, raw, parseErr string, maxBudget int) ([]map[string]string, string) {
+	// First, truncate parseErr if it is absurdly large (e.g., from an Sprintf failure formatting 60,000 items)
+	if len(parseErr) > 2000 {
+		parseErr = parseErr[:1950] + "\n... [TRUNCATED DUE TO ERROR SIZE]"
+	}
 
-IMPORTANT REPAIR RULES:
-- For enum/constrained fields, use ONLY the exact allowed values stated in the ORIGINAL REQUEST or VALIDATION ERROR.
-- Do not invent synonyms, executable names, command names, aliases, or alternative enum labels.
-- Preserve valid content from the previous response unless it must change to satisfy validation.
-- If the VALIDATION ERROR gives a concrete structural correction (for example action="tool" with a specific tool.kind), follow that correction literally while preserving the original semantic intent and tool input.
-- If a field is optional and no valid value is appropriate, omit it or use the explicitly allowed empty value rather than inventing one.
+	repairText := "Your previous response did not match the required JSON structure or validation rules.\n" +
+		"Repair only what is needed to satisfy the original request and validation error. Return ONLY one JSON object, no markdown.\n\n" +
+		"IMPORTANT REPAIR RULES:\n" +
+		"- For enum/constrained fields, use ONLY the exact allowed values stated in the ORIGINAL REQUEST or VALIDATION ERROR.\n" +
+		"- Do not invent synonyms, executable names, command names, aliases, or alternative enum labels.\n" +
+		"- Preserve valid content from the previous response unless it must change to satisfy validation.\n" +
+		"- If the VALIDATION ERROR gives a concrete structural correction (for example action=\"tool\" with a specific tool.kind), follow that correction literally while preserving the original semantic intent and tool input.\n" +
+		"- If a field is optional and no valid value is appropriate, omit it or use the explicitly allowed empty value rather than inventing one.\n\n" +
+		"VALIDATION ERROR:\n" + parseErr
 
-ORIGINAL REQUEST:
-%s
+	// Calculate base cost using lengths instead of []rune for speed and memory efficiency
+	baseCost := len(repairText) / 4
+	for _, m := range messages {
+		baseCost += len(m["content"]) / 4
+	}
 
-PREVIOUS RESPONSE:
-%s
+	rawCost := len(raw) / 4
 
-VALIDATION ERROR:
-%s`, original, raw, parseErr)
+	if maxBudget > 0 && baseCost+rawCost > maxBudget {
+		// Truncate the raw output so it fits within the context budget
+		allowedRawCost := maxBudget - baseCost - 200 // give some buffer
+		if allowedRawCost < 100 {
+			allowedRawCost = 100 // fallback absolute min
+		}
+
+		maxRawBytes := allowedRawCost * 4
+		if len(raw) > maxRawBytes {
+			// Convert to runes only when truncation is required to avoid huge allocations
+			rawRunes := []rune(raw)
+			maxRawRunes := allowedRawCost * 4
+			if len(rawRunes) > maxRawRunes {
+				raw = string(rawRunes[:maxRawRunes-50]) + "\n... [TRUNCATED DUE TO SIZE]"
+			}
+		}
+	}
+
+	if len(messages) == 2 {
+		messages = append(messages, map[string]string{"role": "assistant", "content": raw})
+		messages = append(messages, map[string]string{"role": "user", "content": repairText})
+	} else {
+		// Overwrite the previous failed attempt so we only ever hold the LATEST failed JSON, 
+		// preventing the context window from bloating with multiple broken copies.
+		messages[2] = map[string]string{"role": "assistant", "content": raw}
+		messages[3] = map[string]string{"role": "user", "content": repairText}
+	}
+
+	logPrompt := "PREVIOUS RESPONSE:\n" + raw + "\n\n" + repairText
+
+	return messages, logPrompt
 }
 
-func (c *OpenAICompatible) chat(ctx context.Context, model, system, user string, jsonMode bool) (string, error) {
+func (c *OpenAICompatible) chat(ctx context.Context, model string, messages []map[string]string, jsonMode bool) (string, error) {
 	cfg := c.Config()
 	if model == "" {
 		return "", errors.New("no model selected for this inference")
 	}
 	body := map[string]any{
 		"model":       model,
-		"messages":    []map[string]string{{"role": "system", "content": system}, {"role": "user", "content": user}},
+		"messages":    messages,
 		"stream":      false,
 		"temperature": 0.2,
 		"max_tokens":  cfg.OutputReserve,

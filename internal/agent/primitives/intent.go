@@ -36,8 +36,15 @@ func (p *IntentPrimitive) Execute(ctx context.Context, pc PrimitiveContext, in I
 	purpose := "LATEST USER MESSAGE:\n" + in.UserText
 
 	// Build context (no step, no extras, includeInstructions=false)
-	ctxText := pc.Build(nil, nil, false)
-	user := ctxText + "\nPRIMITIVE INSTRUCTIONS:\n" + intentPrompt + "\n\nPRIMITIVE INPUT:\n" + purpose
+	req := PromptRequest{
+		PrimitiveInstructions: intentPrompt,
+		PrimitiveInput:        purpose,
+		Step:                  nil,
+		Extras:                nil,
+		IncludeInstructions:   false,
+		GlobalPlanView:        true,
+	}
+	user := pc.BuildPrompt(req)
 
 	var out state.IntentResult
 	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelConversation, p.baseSystem, user, &out, func() error {

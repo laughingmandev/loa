@@ -39,8 +39,15 @@ func (p *EvaluateStepPrimitive) Execute(ctx context.Context, pc PrimitiveContext
 	stepJSONBytes, _ := json.Marshal(in.Step)
 	purpose := "STEP:\n" + string(stepJSONBytes)
 
-	ctxText := pc.Build(&in.Step, nil, true)
-	user := ctxText + "\nPRIMITIVE INSTRUCTIONS:\n" + stepEvalPrompt + "\n\nPRIMITIVE INPUT:\n" + purpose
+	req := PromptRequest{
+		PrimitiveInstructions: stepEvalPrompt,
+		PrimitiveInput:        purpose,
+		Step:                  &in.Step,
+		Extras:                nil,
+		IncludeInstructions:   true,
+		GlobalPlanView:        true,
+	}
+	user := pc.BuildPrompt(req)
 
 	var out StepEvaluationResult
 	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelExecuting, p.baseSystem, user, &out, func() error {

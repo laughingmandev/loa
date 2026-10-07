@@ -41,8 +41,15 @@ These target entities will act as hard filters for structural memory lookup befo
 Return {"tags":[{"step_id": 1, "entities":["main.go", "config"]}]}.`
 
 func (p *TagTargetsPrimitive) Execute(ctx context.Context, pc PrimitiveContext, in TagTargetsInput) (PlanTargets, error) {
-	ctxText := pc.Build(nil, nil, true)
-	user := ctxText + "\nPRIMITIVE INSTRUCTIONS:\n" + TagTargetsPrompt + "\n\nPRIMITIVE INPUT:\n" + in.Purpose
+	req := PromptRequest{
+		PrimitiveInstructions: TagTargetsPrompt,
+		PrimitiveInput:        in.Purpose,
+		Step:                  nil,
+		Extras:                nil,
+		IncludeInstructions:   true,
+		GlobalPlanView:        true,
+	}
+	user := pc.BuildPrompt(req)
 
 	var out PlanTargets
 	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelPlanning, p.baseSystem, user, &out, nil)

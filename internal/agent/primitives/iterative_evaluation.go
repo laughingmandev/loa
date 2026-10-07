@@ -55,8 +55,6 @@ func NewIterativeEvaluationPrimitive(cfg config.Config, llmClient llm.Client, ba
 }
 
 func (p *IterativeEvaluationPrimitive) Execute(ctx context.Context, pc PrimitiveContext, in IterativeEvaluationInput) (IterativeEvaluationResult, error) {
-	ctxText := pc.Build(nil, nil, true)
-	
 	prompt := iterativeEvaluationModifyingPrompt
 	if in.IsReadOnly {
 		prompt = iterativeEvaluationReadOnlyPrompt
@@ -68,7 +66,14 @@ func (p *IterativeEvaluationPrimitive) Execute(ctx context.Context, pc Primitive
 	}
 	checklistJSON += "]"
 
-	user := ctxText + "\nPRIMITIVE INSTRUCTIONS:\n" + prompt + "\n\nTASK PURPOSE:\n" + in.Purpose + "\n\nCURRENT CHECKLIST:\n" + checklistJSON
+	req := PromptRequest{
+		PrimitiveInstructions: prompt,
+		PrimitiveInputLabel:   "\nTASK PURPOSE:\n",
+		PrimitiveInput:        in.Purpose + "\n\nCURRENT CHECKLIST:\n" + checklistJSON,
+		IncludeInstructions:   true,
+		GlobalPlanView:        true,
+	}
+	user := pc.BuildPrompt(req)
 
 	var out IterativeEvaluationResult
 	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelExecuting, p.baseSystem, user, &out, func() error {

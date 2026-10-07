@@ -48,8 +48,15 @@ func (p *ExtractStepResultPrimitive) Execute(ctx context.Context, pc PrimitiveCo
 	}
 	purpose := prefix + string(stepJSONBytes)
 
-	ctxText := pc.Build(&in.Step, in.Extras, true)
-	user := ctxText + "\nPRIMITIVE INSTRUCTIONS:\n" + extractStepPrompt + "\n\nPRIMITIVE INPUT:\n" + purpose
+	req := PromptRequest{
+		PrimitiveInstructions: extractStepPrompt,
+		PrimitiveInput:        purpose,
+		Step:                  &in.Step,
+		Extras:                in.Extras,
+		IncludeInstructions:   true,
+		GlobalPlanView:        true,
+	}
+	user := pc.BuildPrompt(req)
 
 	var out StepExtractResult
 	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelExecuting, p.baseSystem, user, &out, func() error {

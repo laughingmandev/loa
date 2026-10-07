@@ -1872,6 +1872,7 @@
     setSelect('#evaluationModeSettings', c.evaluation_mode);
     $('#maxPlanDepth').value = c.max_plan_depth || 5;
     $('#maxExecutionLoops').value = c.max_execution_loops || 80;
+    $('#maxPrerequisitesPerStep').value = c.max_prerequisites_per_step || 4;
     $('#modelTimeout').value = c.model_timeout_seconds || 600;
     $('#commandTimeout').value = c.command_timeout_seconds || 120;
     $('#llmPollingTimeout').value = c.llm_polling_timeout_seconds || 15;
@@ -1945,6 +1946,7 @@
       evaluation_mode: $('#evaluationModeSettings').value,
       max_plan_depth: +$('#maxPlanDepth').value,
       max_execution_loops: +$('#maxExecutionLoops').value,
+      max_prerequisites_per_step: +$('#maxPrerequisitesPerStep').value,
       model_timeout_seconds: +$('#modelTimeout').value,
       command_timeout_seconds: +$('#commandTimeout').value,
       llm_polling_timeout_seconds: +$('#llmPollingTimeout').value,

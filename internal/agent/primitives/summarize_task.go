@@ -42,8 +42,15 @@ func ValidateSummary(v *SummaryResult) error {
 }
 
 func (p *SummarizeTaskPrimitive) Execute(ctx context.Context, pc PrimitiveContext, in SummarizeTaskInput) (SummaryResult, error) {
-	ctxText := pc.Build(nil, nil, true)
-	user := ctxText + "\nPRIMITIVE INSTRUCTIONS:\n" + SummarizeTaskPrompt + "\n\nPRIMITIVE INPUT:\n" + in.Purpose
+	req := PromptRequest{
+		PrimitiveInstructions: SummarizeTaskPrompt,
+		PrimitiveInput:        in.Purpose,
+		Step:                  nil,
+		Extras:                nil,
+		IncludeInstructions:   true,
+		GlobalPlanView:        true,
+	}
+	user := pc.BuildPrompt(req)
 
 	var out SummaryResult
 	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelCrawling, p.baseSystem, user, &out, func() error {

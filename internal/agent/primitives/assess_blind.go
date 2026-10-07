@@ -45,8 +45,14 @@ func NewAssessBlindExecutionPrimitive(cfg config.Config, llmClient llm.Client, b
 }
 
 func (p *AssessBlindExecutionPrimitive) Execute(ctx context.Context, pc PrimitiveContext, in AssessBlindInput) (AssessBlindDecision, error) {
-	ctxText := pc.Build(in.Step, in.Extras, true)
-	user := ctxText + "\nPRIMITIVE INSTRUCTIONS:\n" + assessBlindPrompt
+	req := PromptRequest{
+		PrimitiveInstructions: assessBlindPrompt,
+		Step:                  in.Step,
+		Extras:                in.Extras,
+		IncludeInstructions:   true,
+		GlobalPlanView:        true,
+	}
+	user := pc.BuildPrompt(req)
 
 	var out AssessBlindDecision
 	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelConversation, p.baseSystem, user, &out, func() error {

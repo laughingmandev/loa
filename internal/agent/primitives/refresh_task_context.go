@@ -36,8 +36,15 @@ func NewRefreshTaskContextPrimitive(cfg config.Config, llmClient llm.Client, bas
 
 func (p *RefreshTaskContextPrimitive) Execute(ctx context.Context, pc PrimitiveContext, in RefreshTaskContextInput) (state.TaskContext, error) {
 	var refreshed state.TaskContext
-	ctxText := pc.Build(in.Step, nil, true)
-	user := ctxText + "\nPRIMITIVE INSTRUCTIONS:\n" + TaskContextPrompt + "\n\nPRIMITIVE INPUT:\n" + in.Purpose
+	req := PromptRequest{
+		PrimitiveInstructions: TaskContextPrompt,
+		PrimitiveInput:        in.Purpose,
+		Step:                  in.Step,
+		Extras:                nil,
+		IncludeInstructions:   true,
+		GlobalPlanView:        true,
+	}
+	user := pc.BuildPrompt(req)
 
 	attempts, err := p.llm.ChatJSON(
 		ctx,

@@ -76,8 +76,14 @@ type engineContextBuilder struct {
 	e *Engine
 }
 
-func (b *engineContextBuilder) Build(step *state.PlanStep, extras []string, includeInstructions bool) string {
-	return buildContext(b.e.root, b.e.cfg.Get(), b.e.store.Snapshot(), step, extras, includeInstructions)
+func (b *engineContextBuilder) BuildPrompt(req primitives.PromptRequest) string {
+	res, err := buildPrompt(b.e.root, b.e.cfg.Get(), b.e.store.Snapshot(), baseSystem, req)
+	if err != nil {
+		b.e.log(state.LogSystem, "BuildPrompt", "budget constraint violated", "", err.Error())
+		// Fallback or truncate? We return whatever we have but log the error
+		return res
+	}
+	return res
 }
 
 func (b *engineContextBuilder) RecordInference(primitive string, isRepair bool) {
@@ -951,7 +957,6 @@ func (e *Engine) updateAcceptanceCriteria(ctx context.Context, originalGoal, lat
 	}
 	purpose := "ORIGINAL TASK:\n" + originalGoal
 	if len(snap.ActiveTask.AcceptanceCriteria) > 0 {
-		purpose += "\n\nEXISTING ACCEPTANCE CRITERIA:\n" + mustJSON(snap.ActiveTask.AcceptanceCriteria)
 	}
 	if strings.TrimSpace(latest) != "" {
 		purpose += "\n\nLATEST USER REQUEST ABOUT THIS TASK:\n" + latest
@@ -1036,6 +1041,23 @@ func (e *Engine) tagPlanDraftTargets(ctx context.Context, draft *primitives.Plan
 }
 
 func (e *Engine) createInitialPlan(ctx context.Context, goal string, planningExtras []string) error {
+	snap := e.store.Snapshot()
+	if snap.ActiveTask != nil && snap.ActiveTask.Target == "" {
+		targetPrim := primitives.NewSynthesizeTargetPrimitive(e.cfg.Get(), e.llm, baseSystem)
+		t, err := targetPrim.Execute(ctx, &engineContextBuilder{e: e}, primitives.SynthesizeTargetInput{
+			Goal:    goal,
+			Purpose: "Synthesizing target for initial plan.",
+		})
+		if err != nil {
+			e.log(state.LogPlan, "SynthesizeTarget", "failed to synthesize target", err.Error(), "")
+		} else if t != "" {
+			e.store.UpdateActiveTask(func(ts *state.TaskState) {
+				ts.Target = t
+			})
+			e.log(state.LogPlan, "SynthesizeTarget", "target synthesized", t, "")
+		}
+	}
+
 	critique := ""
 	for attempt := 0; attempt < e.cfg.Get().MaxPlanDepth; attempt++ {
 
@@ -1043,7 +1065,6 @@ func (e *Engine) createInitialPlan(ctx context.Context, goal string, planningExt
 		purpose := "TASK GOAL:\n" + goal
 		if snap.ActiveTask != nil {
 			purpose += fmt.Sprintf("\n\nTASK MODIFICATION AUTHORIZATION: %v", snap.ActiveTask.MayModify)
-			purpose += "\n\nACCEPTANCE CRITERIA:\n" + mustJSON(snap.ActiveTask.AcceptanceCriteria)
 		}
 		if critique != "" {
 			purpose += "\n\nPREVIOUS PLAN CRITIQUE:\n" + critique
@@ -1080,9 +1101,8 @@ func (e *Engine) createInitialPlan(ctx context.Context, goal string, planningExt
 
 		plan := e.planFromDraft(draft, 1, 0, nil)
 
-		evalPurpose := "TASK GOAL:\n" + goal + "\n\nPLAN:\n" + mustJSON(plan)
+		evalPurpose := "TASK GOAL:\n" + goal
 		if snap.ActiveTask != nil {
-			evalPurpose += "\n\nACCEPTANCE CRITERIA:\n" + mustJSON(snap.ActiveTask.AcceptanceCriteria)
 		}
 		evalPrim := primitives.NewEvaluatePlanPrimitive(e.cfg.Get(), e.llm, baseSystem)
 		ev, err := evalPrim.Execute(ctx, &engineContextBuilder{e: e}, primitives.EvaluatePlanInput{
@@ -1115,13 +1135,13 @@ func (e *Engine) planFromDraft(d primitives.PlanResult, version uint64, depth in
 	steps := make([]state.PlanStep, len(d.Steps))
 	for i, s := range d.Steps {
 		deps := []uint64{}
-		if i == 0 {
-			deps = append(deps, inherited...)
-		}
 		for _, pos := range s.DependsOn {
 			if pos >= 1 && pos <= len(ids) {
 				deps = append(deps, ids[pos-1])
 			}
+		}
+		if len(deps) == 0 {
+			deps = append(deps, inherited...)
 		}
 		steps[i] = state.PlanStep{ID: ids[i], Title: s.Title, Goal: s.Goal, Reason: s.Reason, ExpectedResult: s.ExpectedResult, Mode: s.Mode, DependsOn: deps, ExpectedTools: s.ExpectedTools, Status: state.StepPending, DecompositionDepth: depth, TargetEntities: s.TargetEntities}
 	}
@@ -1233,7 +1253,7 @@ func (e *Engine) replan(ctx context.Context, reason string) error {
 	}
 	critique := reason
 	for attempt := 0; attempt < e.cfg.Get().MaxPlanDepth; attempt++ {
-		purpose := fmt.Sprintf("TASK GOAL:\n%s\n\nTASK MODIFICATION AUTHORIZATION: %v\n\nACCEPTANCE CRITERIA:\n%s\n\nLATEST ACCEPTANCE CHECKS:\n%s\n\nLAST FAILURE STATE:\n%s\n\nCOMPLETED STEPS (immutable history):\n%s\n\nSTEP RESULTS:\n%s\n\nWHY REPLAN IS NEEDED / CRITIQUE:\n%s\n\nCreate only the remaining steps. Preserve completed work unless current evidence shows it is invalid.", snap.ActiveTask.Goal, snap.ActiveTask.MayModify, mustJSON(snap.ActiveTask.AcceptanceCriteria), mustJSON(snap.ActiveTask.AcceptanceChecks), mustJSON(snap.ActiveTask.Failure), mustJSON(completed), mustJSON(compactStepResults(snap.ActiveTask.StepResults)), critique)
+		purpose := fmt.Sprintf("TASK GOAL:\n%s\n\nTASK MODIFICATION AUTHORIZATION: %v\n\nCOMPLETED STEPS (immutable history):\n%s\n\nWHY REPLAN IS NEEDED / CRITIQUE:\n%s\n\nCreate only the remaining steps. Preserve completed work unless current evidence shows it is invalid.", snap.ActiveTask.Goal, snap.ActiveTask.MayModify, mustJSON(completed), critique)
 		cb := &engineContextBuilder{e: e}
 		prim := primitives.NewPlanPrimitive(e.cfg.Get(), e.llm, baseSystem)
 		draft, err := prim.Execute(ctx, cb, primitives.PlanInput{
@@ -1264,7 +1284,7 @@ func (e *Engine) replan(ctx context.Context, reason string) error {
 		newPart := e.planFromDraft(draft, snap.ActiveTask.Plan.Version+1, 0, inherited)
 		candidate := state.Plan{Version: newPart.Version, Steps: append(append([]state.PlanStep{}, completed...), newPart.Steps...)}
 
-		evalInput := fmt.Sprintf("TASK GOAL:\n%s\n\nACCEPTANCE CRITERIA:\n%s\n\nREPLANNED FULL PLAN:\n%s\n\nREPLAN TRIGGER:\n%s", snap.ActiveTask.Goal, mustJSON(snap.ActiveTask.AcceptanceCriteria), mustJSON(candidate), reason)
+		evalInput := fmt.Sprintf("TASK GOAL:\n%s\n\nREPLANNED FULL PLAN:\n%s\n\nREPLAN TRIGGER:\n%s", snap.ActiveTask.Goal, mustJSON(candidate), reason)
 		evalPrim := primitives.NewEvaluatePlanPrimitive(e.cfg.Get(), e.llm, baseSystem)
 		ev, err := evalPrim.Execute(ctx, &engineContextBuilder{e: e}, primitives.EvaluatePlanInput{
 			Purpose:  evalInput,
@@ -1621,7 +1641,42 @@ func (e *Engine) checkpointStep(ctx context.Context, step state.PlanStep, extras
 		t.Context.Facts = appendUnique(t.Context.Facts, ex.FactsLearned...)
 		t.Context.Decisions = appendUnique(t.Context.Decisions, ex.Decisions...)
 	})
+
+	e.pruneMemory(ctx)
 	return nil
+}
+
+func (e *Engine) pruneMemory(ctx context.Context) {
+	prunePrim := primitives.NewPruneMemoryPrimitive(e.cfg.Get(), e.llm, baseSystem)
+	snap := e.store.Snapshot()
+	if len(snap.ActiveTask.Context.Facts) > 10 || len(snap.ActiveTask.Context.Decisions) > 10 {
+		pruneRes, pruneErr := prunePrim.Execute(ctx, &engineContextBuilder{e: e}, primitives.PruneMemoryInput{
+			Facts:     snap.ActiveTask.Context.Facts,
+			Decisions: snap.ActiveTask.Context.Decisions,
+			Plan:      &snap.ActiveTask.Plan,
+		})
+		if pruneErr == nil {
+			e.store.UpdateActiveTask(func(t *state.TaskState) {
+				var newFacts []string
+				for _, idx := range pruneRes.KeepFactIndices {
+					if idx >= 0 && idx < len(t.Context.Facts) {
+						newFacts = append(newFacts, t.Context.Facts[idx])
+					}
+				}
+				var newDecisions []string
+				for _, idx := range pruneRes.KeepDecisionIndices {
+					if idx >= 0 && idx < len(t.Context.Decisions) {
+						newDecisions = append(newDecisions, t.Context.Decisions[idx])
+					}
+				}
+				t.Context.Facts = newFacts
+				t.Context.Decisions = newDecisions
+			})
+			e.log(state.LogPlan, "PruneMemory", "pruned working memory", "", fmt.Sprintf("kept %d facts, %d decisions", len(pruneRes.KeepFactIndices), len(pruneRes.KeepDecisionIndices)))
+		} else {
+			e.log(state.LogPlan, "PruneMemory", "failed to prune memory", pruneErr.Error(), "")
+		}
+	}
 }
 
 func (e *Engine) getStep(id uint64) (state.PlanStep, error) {
@@ -1776,7 +1831,7 @@ func (e *Engine) completeStep(ctx context.Context, step state.PlanStep, extras [
 	refreshed := state.TaskContext{}
 	refreshOK := false
 	if snap.ActiveTask != nil {
-		purpose := "PREVIOUS TASK CONTEXT:\n" + mustJSON(snap.ActiveTask.Context) + "\n\nNEW COMPLETED STEP RESULT:\n" + mustJSON(result) + "\n\nACCEPTANCE CRITERIA:\n" + mustJSON(snap.ActiveTask.AcceptanceCriteria)
+		purpose := "PREVIOUS TASK CONTEXT:\n" + mustJSON(snap.ActiveTask.Context) + "\n\nNEW COMPLETED STEP RESULT:\n" + mustJSON(result)
 		refreshPrim := primitives.NewRefreshTaskContextPrimitive(e.cfg.Get(), e.llm, baseSystem)
 		var err error
 		refreshed, err = refreshPrim.Execute(ctx, &engineContextBuilder{e: e}, primitives.RefreshTaskContextInput{
@@ -1807,6 +1862,7 @@ func (e *Engine) completeStep(ctx context.Context, step state.PlanStep, extras [
 	if ex.Summary != "" {
 		e.addMemory(ctx, state.MemoryStepResult, ex.Summary, nil, &step.ID, state.MessageAgent)
 	}
+	e.pruneMemory(ctx)
 	return nil
 }
 
@@ -1822,7 +1878,7 @@ func (e *Engine) runIterativeEvaluation(ctx context.Context, isReadOnly bool) (p
 		snap = e.store.Snapshot()
 	}
 
-	purpose := fmt.Sprintf("ORIGINAL TASK:\n%s\n\nACCEPTANCE CRITERIA:\n%s\n\nPLAN:\n%s\n\nACTUAL STEP RESULTS:\n%s\n\nPRIOR VERIFICATION CONCERNS:\n%s", snap.ActiveTask.Goal, mustJSON(snap.ActiveTask.AcceptanceCriteria), mustJSON(snap.ActiveTask.Plan), mustJSON(compactStepResults(snap.ActiveTask.StepResults)), mustJSON(compactVerificationConcerns(snap)))
+	purpose := fmt.Sprintf("ORIGINAL TASK:\n%s\n\nPRIOR VERIFICATION CONCERNS:\n%s", snap.ActiveTask.Goal, mustJSON(compactVerificationConcerns(snap)))
 
 	checklist := make([]state.AcceptanceCheck, len(snap.ActiveTask.AcceptanceCriteria))
 	for i, c := range snap.ActiveTask.AcceptanceCriteria {
@@ -1843,10 +1899,6 @@ func (e *Engine) runIterativeEvaluation(ctx context.Context, isReadOnly bool) (p
 
 	for loop := 0; loop < maxLoops; loop++ {
 		cb := &engineContextBuilder{e: e}
-		// add extras to context
-		for _, extra := range extras {
-			cb.Build(nil, []string{extra}, false)
-		}
 
 		res, err := evalPrim.Execute(ctx, cb, primitives.IterativeEvaluationInput{
 			Purpose:    purpose,
@@ -1932,7 +1984,7 @@ func (e *Engine) finishTask(ctx context.Context, check primitives.FinalCheck) er
 	}
 
 	goal := snap.ActiveTask.Goal
-	summaryPurpose := "TASK:\n" + goal + "\n\nACCEPTANCE CRITERIA:\n" + mustJSON(snap.ActiveTask.AcceptanceCriteria) + "\n\nFINAL ACCEPTANCE CHECKS:\n" + mustJSON(check.Checks) + "\n\nRESULTS:\n" + mustJSON(compactStepResults(snap.ActiveTask.StepResults))
+	summaryPurpose := "TASK:\n" + goal
 	summaryText := e.finalizeTaskMemory(ctx, snap, baseSystem, summaryPurpose)
 
 	e.store.CompleteActiveTask(state.TaskCompleted)
@@ -2030,12 +2082,23 @@ func fallbackTaskSummary(results []state.StepResult) string {
 
 func (e *Engine) generateFinalResponse(ctx context.Context, userText, proposed string, step *state.PlanStep, extras []string) (string, error) {
 	snap := e.store.Snapshot()
-	contextText := buildContext(e.root, e.cfg.Get(), snap, step, extras, true)
-	prompt := contextText + "\nGenerate the final user-facing response. Be concise and factual. Do not claim work not evidenced.\n\nUSER REQUEST:\n" + userText + "\n\nPROPOSED CONTENT / CONCLUSION:\n" + proposed
-	e.setLastContext(finalResponseSystem + "\n\n" + prompt)
+	req := primitives.PromptRequest{
+		PrimitiveInstructions: "Generate the final user-facing response. Be concise and factual. Do not claim work not evidenced.",
+		PrimitiveInputLabel:   "\nUSER REQUEST:\n",
+		PrimitiveInput:        userText + "\n\nPROPOSED CONTENT / CONCLUSION:\n" + proposed,
+		Step:                  step,
+		Extras:                extras,
+		IncludeInstructions:   true,
+		GlobalPlanView:        true,
+	}
+	prompt, err := buildPrompt(e.root, e.cfg.Get(), snap, finalResponseSystem, req)
+	if err != nil {
+		e.log(state.LogSystem, "GenerateFinalResponse", "budget constraint violated", "", err.Error())
+	}
+	e.setLastContext(prompt)
 	e.recordInference("GenerateFinalResponse", 1)
 	out, err := e.llm.ChatText(ctx, e.cfg.Get().ModelExecuting, finalResponseSystem, prompt)
-	e.log(state.LogLLM, "GenerateFinalResponse", "final response", finalResponseSystem+"\n\n"+prompt, out)
+	e.log(state.LogLLM, "GenerateFinalResponse", "final response", prompt, out)
 	return strings.TrimSpace(out), err
 }
 

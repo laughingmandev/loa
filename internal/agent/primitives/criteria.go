@@ -39,8 +39,15 @@ func NewCriteriaPrimitive(cfg config.Config, llmClient llm.Client, baseSystem st
 }
 
 func (p *CriteriaPrimitive) Execute(ctx context.Context, pc PrimitiveContext, in CriteriaInput) (CriteriaResult, error) {
-	ctxText := pc.Build(nil, in.Extras, true)
-	user := ctxText + "\nPRIMITIVE INSTRUCTIONS:\n" + criteriaPrompt + "\n\nPRIMITIVE INPUT:\n" + in.Purpose
+	req := PromptRequest{
+		PrimitiveInstructions: criteriaPrompt,
+		PrimitiveInput:        in.Purpose,
+		Step:                  nil,
+		Extras:                in.Extras,
+		IncludeInstructions:   true,
+		GlobalPlanView:        true,
+	}
+	user := pc.BuildPrompt(req)
 
 	var out CriteriaResult
 	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelPlanning, p.baseSystem, user, &out, func() error {

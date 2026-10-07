@@ -71,8 +71,15 @@ func ValidateConsolidation(v *ConsolidateContextResult) error {
 }
 
 func (p *ConsolidateContextPrimitive) Execute(ctx context.Context, pc PrimitiveContext, in ConsolidateContextInput) (ConsolidateContextResult, error) {
-	ctxText := pc.Build(nil, nil, false)
-	user := ctxText + "\nPRIMITIVE INSTRUCTIONS:\n" + ConsolidateContextPrompt + "\n\nPRIMITIVE INPUT:\n" + in.Purpose
+	req := PromptRequest{
+		PrimitiveInstructions: ConsolidateContextPrompt,
+		PrimitiveInput:        in.Purpose,
+		Step:                  nil,
+		Extras:                nil,
+		IncludeInstructions:   false,
+		GlobalPlanView:        true,
+	}
+	user := pc.BuildPrompt(req)
 
 	var out ConsolidateContextResult
 	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelCrawling, p.baseSystem, user, &out, func() error {

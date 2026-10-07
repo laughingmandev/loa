@@ -65,6 +65,7 @@ type Config struct {
 	Permissions                    PermissionConfig `json:"permissions"`
 	BlindActionThreshold           int              `json:"blind_action_threshold"`
 	EvaluationMode                 string           `json:"evaluation_mode"`
+	MaxPrerequisitesPerStep        int              `json:"max_prerequisites_per_step"`
 }
 
 func Default() Config {
@@ -105,6 +106,7 @@ func Default() Config {
 		ServerReadHeaderTimeoutSeconds: 10,
 		BlindActionThreshold:           8,
 		EvaluationMode:                 "Dynamic",
+		MaxPrerequisitesPerStep:        4,
 		Permissions: PermissionConfig{
 			Mode: PermissionSelected,
 			AskFor: map[state.ToolKind]bool{

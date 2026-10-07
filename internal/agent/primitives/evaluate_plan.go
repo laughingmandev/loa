@@ -2,6 +2,7 @@ package primitives
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/laughingmandev/loa/internal/config"
@@ -50,8 +51,18 @@ func NewEvaluatePlanPrimitive(cfg config.Config, llmClient llm.Client, baseSyste
 
 func (p *EvaluatePlanPrimitive) Execute(ctx context.Context, pc PrimitiveContext, in EvaluatePlanInput) (PlanEvaluation, error) {
 	var ev PlanEvaluation
-	ctxText := pc.Build(nil, in.Extras, true)
-	user := ctxText + "\nPRIMITIVE INSTRUCTIONS:\n" + planEvalPrompt + "\n\nPRIMITIVE INPUT:\n" + in.Purpose
+	b, _ := json.Marshal(in.Plan)
+	fullInput := fmt.Sprintf("%s\n\nPLAN DRAFT:\n%s", in.Purpose, string(b))
+
+	req := PromptRequest{
+		PrimitiveInstructions: planEvalPrompt,
+		PrimitiveInput:        fullInput,
+		Step:                  nil,
+		Extras:                in.Extras,
+		IncludeInstructions:   true,
+		GlobalPlanView:        false,
+	}
+	user := pc.BuildPrompt(req)
 
 	attempts, err := p.llm.ChatJSON(
 		ctx,

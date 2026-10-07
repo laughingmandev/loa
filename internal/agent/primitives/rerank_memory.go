@@ -65,8 +65,15 @@ func ValidateRerank(rr *RerankResult, valid map[uint64]bool, limit int) error {
 }
 
 func (p *RerankMemoryPrimitive) Execute(ctx context.Context, pc PrimitiveContext, in RerankMemoryInput) (RerankResult, error) {
-	ctxText := pc.Build(in.Step, nil, false)
-	user := ctxText + "\nPRIMITIVE INSTRUCTIONS:\n" + RerankPrompt + "\n\nPRIMITIVE INPUT:\n" + in.Purpose
+	req := PromptRequest{
+		PrimitiveInstructions: RerankPrompt,
+		PrimitiveInput:        in.Purpose,
+		Step:                  in.Step,
+		Extras:                nil,
+		IncludeInstructions:   false,
+		GlobalPlanView:        true,
+	}
+	user := pc.BuildPrompt(req)
 
 	var out RerankResult
 	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelExecuting, p.baseSystem, user, &out, func() error {

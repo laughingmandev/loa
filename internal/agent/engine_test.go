@@ -31,7 +31,10 @@ type scriptedLLM struct {
 func (f *scriptedLLM) Models(context.Context) ([]string, error) { return []string{"fake"}, nil }
 
 func firstPlanStepID(prompt string) (string, error) {
-	idx := strings.LastIndex(prompt, "\nPLAN:\n")
+	idx := strings.LastIndex(prompt, "\nPLAN DRAFT:\n")
+	if idx < 0 {
+		idx = strings.LastIndex(prompt, "\nPLAN:\n")
+	}
 	if idx < 0 {
 		idx = strings.LastIndex(prompt, "PLAN:\n")
 	}
@@ -75,6 +78,7 @@ func (f *scriptedLLM) ChatJSON(_ context.Context, model string, _ string, prompt
 	}
 	if validate != nil {
 		if err := validate(); err != nil {
+			fmt.Printf("[TEST MOCK] validation failed for %q: %v\n", raw, err)
 			return []llm.Attempt{{PromptKind: "original", Prompt: prompt, Raw: raw, Error: err.Error()}}, err
 		}
 	}
@@ -109,13 +113,15 @@ func TestSimpleTaskLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	st.SetSessionModes("", false)
 	tm := tools.New(root, nil, cfg.Get, nil)
 	fake := &scriptedLLM{text: "Implemented and verified.", json: []string{
 		`{"intents":["task"],"answers_pending_question":false,"ambiguous":false,"reason":"explicit task"}`,
 		`{"items":[]}`,
 		`{"criteria":["The requested change is completed and verified."],"reason":"captures the requested outcome"}`,
 		`{"mappings":[]}`,
-		`{"steps":[{"title":"Do task","goal":"complete requested change","reason":"needed","expected_result":"task completed","mode":"modify","depends_on":[],"expected_tools":[]}],"reason":"simple plan"}`,
+		`{"target":"do task"}`,
+		`{"version":1,"steps":[{"title":"Do task","goal":"complete requested change","reason":"needed","expected_result":"task completed","mode":"modify","depends_on":[],"expected_tools":[]}],"reason":"simple plan"}`,
 		`{"tags":[{"step_id":1,"entities":["target1"]}]}`,
 		`{"valid":true,"reason":"plan is sufficient","coverage":[{"criterion_id":1,"step_ids":[__FIRST_PLAN_STEP_ID__],"reason":"the only plan step covers the requested outcome"}],"issues":[]}`,
 		`{"index_keys":["plan", "keywords"],"reason":"plan memory"}`,
@@ -556,13 +562,14 @@ func TestReadOnlyTaskUsesStructuredTaskLifecycle(t *testing.T) {
 	if _, err := st.CreateSession("Read only task"); err != nil {
 		t.Fatal(err)
 	}
-	st.SetSessionModes("", "", true)
+	st.SetSessionModes("", true)
 	fake := &scriptedLLM{text: "Analysis complete.", json: []string{
 		`{"intents":["task"],"answers_pending_question":false,"ambiguous":false,"reason":"structured read-only analysis"}`,
 		`{"items":[]}`,
 		`{"criteria":["The project architecture is analyzed from source code."],"reason":"captures the requested read-only outcome"}`,
 		`{"mappings":[]}`,
-		`{"steps":[{"title":"Analyze file","goal":"determine answer","reason":"investigation needed","expected_result":"answer found","mode":"investigate","depends_on":[],"expected_tools":["read_file"]}],"reason":"simple analysis plan"}`,
+		`{"target":"analyze architecture"}`,
+		`{"version":1,"steps":[{"title":"Analyze file","goal":"determine answer","reason":"investigation needed","expected_result":"answer found","mode":"investigate","depends_on":[],"expected_tools":["read_file"]}],"reason":"simple analysis plan"}`,
 		`{"tags":[{"step_id":1,"entities":["file.go"]}]}`,
 		`{"valid":true,"reason":"plan covers the analysis","coverage":[{"criterion_id":1,"step_ids":[__FIRST_PLAN_STEP_ID__],"reason":"analysis step covers the criterion"}],"issues":[]}`,
 		`{"index_keys":["plan", "keywords"],"reason":"plan memory"}`,
@@ -623,15 +630,15 @@ func TestReadOnlyTaskRejectsModifyPlan(t *testing.T) {
 		ExpectedResult: "file changed",
 		Mode:           state.StepModify,
 	}}}
-	if err := primitives.ValidatePlanForTask(p, false); err == nil || !strings.Contains(err.Error(), "strictly read-only") {
+	if err := primitives.ValidatePlanForTask(p, false, 5); err == nil || !strings.Contains(err.Error(), "strictly read-only") {
 		t.Fatalf("expected read-only plan rejection, got %v", err)
 	}
-	if err := primitives.ValidatePlanForTask(p, true); err != nil {
+	if err := primitives.ValidatePlanForTask(p, true, 5); err != nil {
 		t.Fatalf("modify-authorized task should accept modify step: %v", err)
 	}
 	p.Steps[0].Mode = state.StepInvestigate
 	p.Steps[0].ExpectedTools = []state.ToolKind{state.ToolWriteFile}
-	if err := primitives.ValidatePlanForTask(p, false); err == nil || !strings.Contains(err.Error(), "mutating tool") {
+	if err := primitives.ValidatePlanForTask(p, false, 5); err == nil || !strings.Contains(err.Error(), "mutating tool") {
 		t.Fatalf("expected read-only expected-tool rejection, got %v", err)
 	}
 }
@@ -658,6 +665,8 @@ func TestInterventionBecomesTaskGuidanceAndRequestsReplan(t *testing.T) {
 		`{"action":"replan_remaining","reason":"local runtime tests are unavailable","summary":"Use non-runtime verification and stop retrying local tests.","facts":[],"decisions":[],"constraints":["Laravel tests cannot run locally because the runtime is in dedicated containers."],"open_issues":[],"missing":""}`,
 		`{"items":[]}`,
 		`{"criteria":["Requested behavior is corrected."],"reason":"environment guidance changes verification strategy, not the requested outcome"}`,
+		`{"mappings":[]}`,
+		`{"target":"fix laravel behavior"}`,
 	}}
 	eng := New(root, st, memory.NewStore(root, 336.0, 0.03), cfg, fake, tools.New(root, nil, cfg.Get, nil), nil)
 	eng.mu.Lock()

@@ -41,8 +41,15 @@ func (p *AmbiguityPrimitive) Execute(ctx context.Context, pc PrimitiveContext, i
 	purpose := "LATEST USER MESSAGE:\n" + in.UserText
 
 	// Build context (no step, no extras, includeInstructions=false)
-	ctxText := pc.Build(nil, nil, false)
-	user := ctxText + "\nPRIMITIVE INSTRUCTIONS:\n" + ambiguityPrompt + "\n\nPRIMITIVE INPUT:\n" + purpose
+	req := PromptRequest{
+		PrimitiveInstructions: ambiguityPrompt,
+		PrimitiveInput:        purpose,
+		Step:                  nil,
+		Extras:                nil,
+		IncludeInstructions:   false,
+		GlobalPlanView:        true,
+	}
+	user := pc.BuildPrompt(req)
 
 	var out AmbiguityResult
 	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelConversation, p.baseSystem, user, &out, func() error {

@@ -38,8 +38,15 @@ func (p *GenerateStepArtifactPrimitive) Execute(ctx context.Context, pc Primitiv
 	stepJSONBytes, _ := json.Marshal(in.Step)
 	purpose := "COMPLETED STEP:\n" + string(stepJSONBytes)
 
-	ctxText := pc.Build(&in.Step, in.Extras, true)
-	user := ctxText + "\nPRIMITIVE INSTRUCTIONS:\n" + generateStepArtifactPrompt + "\n\nPRIMITIVE INPUT:\n" + purpose
+	req := PromptRequest{
+		PrimitiveInstructions: generateStepArtifactPrompt,
+		PrimitiveInput:        purpose,
+		Step:                  &in.Step,
+		Extras:                in.Extras,
+		IncludeInstructions:   true,
+		GlobalPlanView:        true,
+	}
+	user := pc.BuildPrompt(req)
 
 	var out GenerateStepArtifactResult
 	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelExecuting, p.baseSystem, user, &out, nil)

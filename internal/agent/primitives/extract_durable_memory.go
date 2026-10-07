@@ -61,8 +61,15 @@ func ValidateMemory(m *MemoryExtraction) error {
 }
 
 func (p *ExtractDurableMemoryPrimitive) Execute(ctx context.Context, pc PrimitiveContext, in ExtractDurableMemoryInput) (MemoryExtraction, error) {
-	ctxText := pc.Build(nil, nil, false)
-	user := ctxText + "\nPRIMITIVE INSTRUCTIONS:\n" + ExtractDurableMemoryPrompt + "\n\nPRIMITIVE INPUT:\n" + in.Purpose
+	req := PromptRequest{
+		PrimitiveInstructions: ExtractDurableMemoryPrompt,
+		PrimitiveInput:        in.Purpose,
+		Step:                  nil,
+		Extras:                nil,
+		IncludeInstructions:   false,
+		GlobalPlanView:        true,
+	}
+	user := pc.BuildPrompt(req)
 
 	var out MemoryExtraction
 	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelCrawling, p.baseSystem, user, &out, func() error {

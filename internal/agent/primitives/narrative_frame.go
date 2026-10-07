@@ -43,8 +43,15 @@ func ValidateNarrativeFrame(v *NarrativeFrameResult) error {
 }
 
 func (p *NarrativeFramePrimitive) Execute(ctx context.Context, pc PrimitiveContext, in NarrativeFrameInput) (NarrativeFrameResult, error) {
-	ctxText := pc.Build(nil, nil, false)
-	user := ctxText + "\nPRIMITIVE INSTRUCTIONS:\n" + NarrativeFramePrompt + "\n\nPRIMITIVE INPUT:\n" + in.Purpose
+	req := PromptRequest{
+		PrimitiveInstructions: NarrativeFramePrompt,
+		PrimitiveInput:        in.Purpose,
+		Step:                  nil,
+		Extras:                nil,
+		IncludeInstructions:   false,
+		GlobalPlanView:        true,
+	}
+	user := pc.BuildPrompt(req)
 
 	var out NarrativeFrameResult
 	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelCrawling, p.baseSystem, user, &out, func() error {

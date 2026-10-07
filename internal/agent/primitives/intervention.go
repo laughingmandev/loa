@@ -66,8 +66,15 @@ func ValidateIntervention(v *InterventionResult) error {
 }
 
 func (p *InterventionPrimitive) Execute(ctx context.Context, pc PrimitiveContext, in InterventionInput) (InterventionResult, error) {
-	ctxText := pc.Build(nil, nil, true)
-	user := ctxText + "\nPRIMITIVE INSTRUCTIONS:\n" + InterventionPrompt + "\n\nPRIMITIVE INPUT:\n" + in.Purpose
+	req := PromptRequest{
+		PrimitiveInstructions: InterventionPrompt,
+		PrimitiveInput:        in.Purpose,
+		Step:                  nil,
+		Extras:                nil,
+		IncludeInstructions:   true,
+		GlobalPlanView:        true,
+	}
+	user := pc.BuildPrompt(req)
 	if in.StepJSON != "" {
 		user += "\n\nCURRENT STEP AT GUIDANCE BOUNDARY:\n" + in.StepJSON
 	}
