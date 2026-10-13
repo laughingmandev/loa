@@ -20,7 +20,7 @@ The principles below describe the current implementation rather than a generic a
 - **Hypothesis before many mutations.** Mutating tools other than `execute_process` can be preceded by `FormulateHypothesis` in the current engine.
 - **"Ran" is not the same as "verified."** A successful tool exit is not automatically treated as proof that a step's objective is complete. Evaluation can return partial or verification-required outcomes.
 - **Failure is structured state.** The recovery path can distinguish retry, investigate/repair, clarification, rollback/recovery, and replanning rather than applying a single retry rule.
-- **Malformed structured output is repaired through bounded model retries.** The LLM client parses JSON strictly and can ask the model to repair malformed output up to the configured retry limit. The current implementation should not be described as having a separate deterministic JSON-repair pipeline.
+- **Malformed structured output is repaired through bounded model retries.** The LLM client parses JSON strictly and can ask the model to repair malformed output up to the configured retry limit. The current implementation accounts for **dynamic repair accounting**, dynamically calculating the token overhead of a repair stack trace and subtracting it from the available context window to prevent catastrophic buffer overflows during complex loops. It also provides a config toggle (`force_json_mode`) to bypass fragile backend JSON parsers (e.g., Ollama's 0-length silent crashes on Qwen models) to handle JSON extraction entirely through robust application-layer logic if needed. The current implementation should not be described as having a separate deterministic JSON-repair pipeline.
 
 ## 3. Context and Memory
 

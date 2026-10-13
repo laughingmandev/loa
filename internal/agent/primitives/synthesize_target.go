@@ -52,10 +52,18 @@ func (p *SynthesizeTargetPrimitive) Execute(ctx context.Context, pc PrimitiveCon
 		IncludeInstructions:   true,
 		GlobalPlanView:        true,
 	}
-	user := pc.BuildPrompt(req)
+	var user string
+	_ = user
 
 	var out SynthesizeTargetResult
-	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelPlanning, p.baseSystem, user, &out, func() error {
+	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelPlanning, p.baseSystem, func(repairCost int) (string, error) {
+		req.RepairReserve = repairCost
+		prompt, promptErr := pc.BuildPrompt(req)
+		if repairCost == 0 && promptErr == nil {
+			user = prompt
+		}
+		return prompt, promptErr
+	}, &out, func() error {
 		if strings.TrimSpace(out.Target) == "" {
 			return errors.New("target is required")
 		}

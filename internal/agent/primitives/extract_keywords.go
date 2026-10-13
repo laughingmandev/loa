@@ -43,13 +43,21 @@ func (p *ExtractKeywordsPrimitive) Execute(ctx context.Context, pc PrimitiveCont
 		IncludeInstructions:   true,
 		GlobalPlanView:        true,
 	}
-	user := pc.BuildPrompt(req)
+	var user string
+	_ = user
 
 	attempts, err := p.llm.ChatJSON(
 		ctx,
 		p.cfg.ModelCrawling,
 		p.baseSystem,
-		user,
+		func(repairCost int) (string, error) {
+		req.RepairReserve = repairCost
+		prompt, promptErr := pc.BuildPrompt(req)
+		if repairCost == 0 && promptErr == nil {
+			user = prompt
+		}
+		return prompt, promptErr
+	},
 		&ext,
 		nil, // no specific validation logic needed
 	)

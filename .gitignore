@@ -13,3 +13,9 @@ sandbox/loa-bin
 .loa/
 .loa*
 scratch/
+tmp/
+.agents/
+*.txt
+cmd/loa-test-prompts/
+loa-test-prompts
+loa-analyzer

@@ -73,10 +73,18 @@ func (p *RerankMemoryPrimitive) Execute(ctx context.Context, pc PrimitiveContext
 		IncludeInstructions:   false,
 		GlobalPlanView:        true,
 	}
-	user := pc.BuildPrompt(req)
+	var user string
+	_ = user
 
 	var out RerankResult
-	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelExecuting, p.baseSystem, user, &out, func() error {
+	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelExecuting, p.baseSystem, func(repairCost int) (string, error) {
+		req.RepairReserve = repairCost
+		prompt, promptErr := pc.BuildPrompt(req)
+		if repairCost == 0 && promptErr == nil {
+			user = prompt
+		}
+		return prompt, promptErr
+	}, &out, func() error {
 		return ValidateRerank(&out, in.ValidIDs, in.Limit)
 	})
 

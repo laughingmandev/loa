@@ -56,7 +56,8 @@ func firstPlanStepID(prompt string) (string, error) {
 	}
 	return tail[:end], nil
 }
-func (f *scriptedLLM) ChatJSON(_ context.Context, model string, _ string, prompt string, out any, validate func() error) ([]llm.Attempt, error) {
+func (f *scriptedLLM) ChatJSON(_ context.Context, model string, _ string, buildPrompt func(repairCost int) (string, error), out any, validate func() error) ([]llm.Attempt, error) {
+	prompt, _ := buildPrompt(0)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if len(f.json) == 0 {

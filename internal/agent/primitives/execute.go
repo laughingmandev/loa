@@ -23,16 +23,15 @@ Return exactly one of:
 {"action":"ask_user","reason":"short","ask_user_question":"what cannot be determined locally"}
 {"action":"step_complete","reason":"short","completion_summary":"what was accomplished"}`
 
-
 type ExecutionDecision struct {
-	Action                string         `json:"action"`
-	Reason                string         `json:"reason"`
-	EvaluateAfter         *bool          `json:"evaluate_after,omitempty"`
-	Query                 string         `json:"query,omitempty"`
-	AllowedKinds          []string       `json:"allowed_kinds,omitempty"`
-	Tool                  *tools.Request `json:"tool,omitempty"`
-	AskUserQuestion       string         `json:"ask_user_question,omitempty"`
-	CompletionSummary     string         `json:"completion_summary,omitempty"`
+	Action            string         `json:"action"`
+	Reason            string         `json:"reason"`
+	EvaluateAfter     *bool          `json:"evaluate_after,omitempty"`
+	Query             string         `json:"query,omitempty"`
+	AllowedKinds      []string       `json:"allowed_kinds,omitempty"`
+	Tool              *tools.Request `json:"tool,omitempty"`
+	AskUserQuestion   string         `json:"ask_user_question,omitempty"`
+	CompletionSummary string         `json:"completion_summary,omitempty"`
 }
 
 type ExecuteStepInput struct {
@@ -80,14 +79,22 @@ FAST LANE RULE: You are operating in Fast Lane mode. There will be NO final synt
 		Step:                  &in.Step,
 		Extras:                in.Extras,
 		IncludeInstructions:   true,
-		GlobalPlanView:        true,
+		GlobalPlanView:        false,
 		PinnedEvaluation:      in.PinnedEvaluation,
 		BlindTrail:            in.BlindTrail,
 	}
-	user := pc.BuildPrompt(req)
+	var user string
+	_ = user
 
 	var out ExecutionDecision
-	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelExecuting, p.baseSystem, user, &out, func() error {
+	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelExecuting, p.baseSystem, func(repairCost int) (string, error) {
+		req.RepairReserve = repairCost
+		prompt, promptErr := pc.BuildPrompt(req)
+		if repairCost == 0 && promptErr == nil {
+			user = prompt
+		}
+		return prompt, promptErr
+	}, &out, func() error {
 		return ValidateExecution(&out)
 	})
 
@@ -111,6 +118,17 @@ FAST LANE RULE: You are operating in Fast Lane mode. There will be NO final synt
 }
 
 func ValidateExecution(d *ExecutionDecision) error {
+	// Auto-repair for common hallucination where Action is set to the tool kind
+	if d.Action != "tool" && tools.ValidKind(state.ToolKind(d.Action)) {
+		if d.Tool != nil {
+			// The LLM provided the nested tool struct correctly, just mislabeled the action
+			if d.Tool.Kind == "" {
+				d.Tool.Kind = state.ToolKind(d.Action)
+			}
+			d.Action = "tool"
+		}
+	}
+
 	if err := NeedReason(d.Reason); err != nil {
 		return err
 	}
@@ -134,6 +152,7 @@ func ValidateExecution(d *ExecutionDecision) error {
 			return fmt.Errorf("completion_summary required")
 		}
 	default:
+		// autorepair should cover this now ### but we keep it temporary
 		if err := ToolActionRepairHint(d.Action); err != nil {
 			return err
 		}

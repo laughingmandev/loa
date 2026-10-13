@@ -49,7 +49,7 @@ On reload, an active task that was persisted as `running` is converted to `pause
 
 ## 4. Active Task Context / Working Memory
 
-The UI's **Working Memory** view corresponds to information held in the active task state: current facts, decisions, constraints, open issues, guidance, and related task context used while the task is running.
+The UI's **Working Memory** view corresponds to information held in the active task state: current facts, decisions, constraints, open issues, guidance, and related task context used while the task is running. The `TaskState` also explicitly tracks a synthesized `Target` to focus the agent on specific operational target components or entities.
 
 At normal Planned step completion, `RefreshTaskContext` rebuilds that structured task context from the prior task context, the newly completed `StepResult`, and the task's acceptance criteria. If that model operation fails, the engine has a deterministic fallback that carries forward extracted facts/decisions.
 
@@ -99,10 +99,11 @@ If a piece does not fit, it can be truncated to the remaining available runes. T
 
 The current builder estimates prompt size using an approximate rune-to-token conversion. It reserves:
 
-- a safety buffer (5% of `context_budget`, with `context_minimum_buffer` as the configured minimum),
-- `output_reserve` for model output.
+- a safety buffer (dynamically calculated using `context_prompt_margin_percent` and `context_network_margin_percent` against `context_budget`),
+- `output_reserve` for model output,
+- any immutable overhead required for the current inference (such as the dynamically calculated cost of a JSON repair stack trace).
 
-The resulting prompt allowance is further bounded/floored using the context safety settings. `code_budget` limits how much extra retrieved/tool material can be injected.
+The resulting prompt allowance represents the available `slackRunes`. Loa uses **proportional token budgeting** to allocate this slack space dynamically between Chat History and Extra Context (retrieved memories/tools). `code_budget` limits the absolute maximum of how much extra retrieved/tool material can be injected, but the dynamic squashing ensures that large, unavoidable overheads (like repair loops) smoothly compress the available context rather than blowing past the context window.
 
 This means a task can remain within its configured context budget on every individual inference while still making hundreds of model requests over the lifetime of the task.
 

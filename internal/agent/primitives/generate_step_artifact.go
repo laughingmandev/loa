@@ -46,10 +46,18 @@ func (p *GenerateStepArtifactPrimitive) Execute(ctx context.Context, pc Primitiv
 		IncludeInstructions:   true,
 		GlobalPlanView:        true,
 	}
-	user := pc.BuildPrompt(req)
+	var user string
+	_ = user
 
 	var out GenerateStepArtifactResult
-	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelExecuting, p.baseSystem, user, &out, nil)
+	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelExecuting, p.baseSystem, func(repairCost int) (string, error) {
+		req.RepairReserve = repairCost
+		prompt, promptErr := pc.BuildPrompt(req)
+		if repairCost == 0 && promptErr == nil {
+			user = prompt
+		}
+		return prompt, promptErr
+	}, &out, nil)
 
 	for i := range attempts {
 		if i == 0 {

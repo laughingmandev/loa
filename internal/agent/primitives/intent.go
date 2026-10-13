@@ -44,10 +44,18 @@ func (p *IntentPrimitive) Execute(ctx context.Context, pc PrimitiveContext, in I
 		IncludeInstructions:   false,
 		GlobalPlanView:        true,
 	}
-	user := pc.BuildPrompt(req)
+	var user string
+	_ = user
 
 	var out state.IntentResult
-	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelConversation, p.baseSystem, user, &out, func() error {
+	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelConversation, p.baseSystem, func(repairCost int) (string, error) {
+		req.RepairReserve = repairCost
+		prompt, promptErr := pc.BuildPrompt(req)
+		if repairCost == 0 && promptErr == nil {
+			user = prompt
+		}
+		return prompt, promptErr
+	}, &out, func() error {
 		return validateIntent(&out)
 	})
 	

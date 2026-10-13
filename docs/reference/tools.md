@@ -6,9 +6,11 @@ Tool permissions and task read-only state determine whether a requested tool is 
 
 ## 1. File Read / Search Tools
 
+*Note on binary files*: The Tool Manager applies a dynamic binary sniffing heuristic (inspecting the first 512 bytes for null bytes) rather than relying on file extensions. Tools below will automatically reject files identified as binary to protect the LLM context.
+
 ### `read_file`
 
-Reads a complete non-binary project-relative file.
+Reads a complete project-relative file.
 
 ```json
 {"path":"main.go"}
@@ -209,12 +211,14 @@ Attempts to use an absolute path or escape the project root through traversal/sy
 
 This path boundary does not apply to arbitrary commands launched by `execute_process`/`execute_shell`.
 
-## 10. Output Truncation
+## 10. Output Truncation and Sanitization
 
 For ordinary tools, the Tool Manager uses `max_stored_tool_output_bytes` (default 4 MiB). If output exceeds the configured limit:
 
 1. the output string is cut to the limit,
 2. `ToolResult.Truncated` is set,
 3. the truncated value is stored as the tool output.
+
+Additionally, the Tool Manager applies a `sanitizeOutput` filter to strip unprintable or corrupt characters from tool results before they are passed into the LLM context buffer.
 
 Documentation should not currently claim a second automatic prompt-output spill-to-artifact stage based on `max_prompt_tool_output_bytes`; that configuration field exists, but this audit found no active runtime consumer in the current engine/Tool Manager path.

@@ -26,6 +26,14 @@ import (
 
 var ErrBusy = errors.New("agent is currently busy")
 
+type ErrNeedsReplan struct {
+	Reason string
+}
+
+func (e ErrNeedsReplan) Error() string {
+	return "needs replan: " + e.Reason
+}
+
 type Status struct {
 	Running           bool               `json:"running"`
 	Reason            string             `json:"reason,omitempty"`
@@ -63,6 +71,8 @@ type Engine struct {
 	runAllowed           map[string]struct{}
 	inferenceByPrimitive map[string]uint64
 	staleFiles           map[string]bool
+	invalidatedPaths     sync.Map
+	reconciledModTimes   map[string]time.Time
 	lastContext          string
 	lastError            string
 }
@@ -76,14 +86,13 @@ type engineContextBuilder struct {
 	e *Engine
 }
 
-func (b *engineContextBuilder) BuildPrompt(req primitives.PromptRequest) string {
+func (b *engineContextBuilder) BuildPrompt(req primitives.PromptRequest) (string, error) {
 	res, err := buildPrompt(b.e.root, b.e.cfg.Get(), b.e.store.Snapshot(), baseSystem, req)
 	if err != nil {
 		b.e.log(state.LogSystem, "BuildPrompt", "budget constraint violated", "", err.Error())
-		// Fallback or truncate? We return whatever we have but log the error
-		return res
+		return res, err
 	}
-	return res
+	return res, nil
 }
 
 func (b *engineContextBuilder) RecordInference(primitive string, isRepair bool) {
@@ -131,6 +140,7 @@ func New(root string, st *state.Store, mem *memory.Store, cfg *config.Manager, l
 		approvals:            map[uint64]approvalRequest{},
 		runAllowed:           map[string]struct{}{},
 		inferenceByPrimitive: map[string]uint64{},
+		reconciledModTimes:   map[string]time.Time{},
 	}
 	
 	if cfg.Get().EmbeddingEngine == "local" && cfg.Get().LocalEmbeddingModelPath != "" {
@@ -891,6 +901,17 @@ func (e *Engine) runActiveTask(ctx context.Context) error {
 			return err
 		}
 		if err := e.prepareStep(ctx, idx, *step); err != nil {
+			var replanErr ErrNeedsReplan
+			if errors.As(err, &replanErr) {
+				replans++
+				if replans > e.cfg.Get().MaxPlanDepth {
+					return errors.New("maximum replans exceeded")
+				}
+				if err := e.replan(ctx, replanErr.Reason); err != nil {
+					return err
+				}
+				continue
+			}
 			return err
 		}
 		runningID, err := e.runningStepID()
@@ -1195,6 +1216,9 @@ func (e *Engine) prepareStep(ctx context.Context, idx int, step state.PlanStep) 
 		if err != nil {
 			return err
 		}
+		if dec.Action == "replan" {
+			return ErrNeedsReplan{Reason: "Decomposition escalated to replan: " + dec.ReplanInstructions}
+		}
 		if len(dec.Steps) < 2 {
 			return errors.New("decomposition must create at least two smaller steps")
 		}
@@ -1203,6 +1227,31 @@ func (e *Engine) prepareStep(ctx context.Context, idx int, step state.PlanStep) 
 		_ = e.tagPlanDraftTargets(ctx, &draftDec)
 
 		newPlan := e.planFromDraft(draftDec, 0, step.DecompositionDepth+1, step.DependsOn)
+
+		var originalReceivers []uint64
+		for _, s := range snap.ActiveTask.Plan.Steps {
+			for _, dep := range s.DependsOn {
+				if dep == step.ID {
+					originalReceivers = append(originalReceivers, s.ID)
+					break
+				}
+			}
+		}
+
+		linkPrim := primitives.NewLinkStepsPrimitive(e.cfg.Get(), e.llm, baseSystem)
+		linkRes, linkErr := linkPrim.Execute(ctx, &engineContextBuilder{e: e}, primitives.LinkStepsInput{
+			DecomposedSteps:   newPlan.Steps,
+			OriginalStepID:    step.ID,
+			OriginalReceivers: originalReceivers,
+			GlobalPlan:        snap.ActiveTask.Plan,
+		})
+		if linkErr != nil {
+			return linkErr
+		}
+		if linkRes.Action == "replan" {
+			return ErrNeedsReplan{Reason: "LinkSteps escalated to replan: " + linkRes.ReplanInstructions}
+		}
+
 		e.store.UpdateActiveTask(func(t *state.TaskState) {
 			pos := -1
 			for i := range t.Plan.Steps {
@@ -1215,14 +1264,39 @@ func (e *Engine) prepareStep(ctx context.Context, idx int, step state.PlanStep) 
 				return
 			}
 			replacement := newPlan.Steps
-			lastID := replacement[len(replacement)-1].ID
+
+			mappingLookup := make(map[uint64][]uint64)
+			for _, m := range linkRes.Mappings {
+				mappingLookup[m.ReceiverID] = m.DependsOn
+			}
+
 			t.Plan.Steps = append(append(append([]state.PlanStep{}, t.Plan.Steps[:pos]...), replacement...), t.Plan.Steps[pos+1:]...)
 			
+			lastID := replacement[len(replacement)-1].ID
+
 			for i := range t.Plan.Steps {
-				for j, dep := range t.Plan.Steps[i].DependsOn {
+				var newDeps []uint64
+				modified := false
+				
+				hasOldDep := false
+				for _, dep := range t.Plan.Steps[i].DependsOn {
 					if dep == step.ID {
-						t.Plan.Steps[i].DependsOn[j] = lastID
+						hasOldDep = true
+						modified = true
+					} else {
+						newDeps = append(newDeps, dep)
 					}
+				}
+				
+				if mappedDeps, ok := mappingLookup[t.Plan.Steps[i].ID]; ok {
+					newDeps = append(newDeps, mappedDeps...)
+					modified = true
+				} else if hasOldDep {
+					newDeps = append(newDeps, lastID)
+				}
+				
+				if modified {
+					t.Plan.Steps[i].DependsOn = newDeps
 				}
 			}
 			
@@ -1338,7 +1412,7 @@ func (e *Engine) executeStep(ctx context.Context, stepID uint64) (string, string
 	
 	retrievalRound := 0
 	deniedSignature := ""
-	executedReads := map[string]bool{}
+	executedReads := map[string]string{}
 	readCount := 0
 	filesRead := map[string]bool{}
 	filesChanged := map[string]bool{}
@@ -1349,6 +1423,17 @@ func (e *Engine) executeStep(ctx context.Context, stepID uint64) (string, string
 	blindActions := 0
 	pinnedEvaluation := ""
 	for loop := 0; loop < e.cfg.Get().MaxExecutionLoops; loop++ {
+		e.invalidatedPaths.Range(func(key, value any) bool {
+			path := key.(string)
+			for sig, p := range executedReads {
+				if p == path {
+					delete(executedReads, sig)
+				}
+			}
+			e.invalidatedPaths.Delete(key)
+			return true
+		})
+
 		step, err := e.getStep(stepID)
 		if err != nil {
 			return "", "", err
@@ -1427,9 +1512,11 @@ func (e *Engine) executeStep(ctx context.Context, stepID uint64) (string, string
 				extras = append(extras, "Repeated identical tool request blocked because the user just denied it. Choose a different action, gather more information, or ask the user.")
 				continue
 			}
-			if !tools.IsMutating(d.Tool.Kind) && executedReads[sig] {
-				extras = append(extras, "You have already executed this exact tool request in this step. The result is already in your context or has been permanently recorded in the task context. Do not repeat it.")
-				continue
+			if !tools.IsMutating(d.Tool.Kind) && d.Tool.Kind != state.ToolSearchText && d.Tool.Kind != state.ToolFindSymbol {
+				if _, exists := executedReads[sig]; exists {
+					extras = append(extras, "You have already executed this exact tool request in this step. The result is already in your context or has been permanently recorded in the task context. Do not repeat it.")
+					continue
+				}
 			}
 			snap := e.store.Snapshot()
 			if snap.ActiveTask == nil {
@@ -1484,7 +1571,11 @@ func (e *Engine) executeStep(ctx context.Context, stepID uint64) (string, string
 			extras = append(extras, formatToolResult(*d.Tool, res))
 			blindTrail = append(blindTrail, fmt.Sprintf("- Action: %s, Reason: %s", string(d.Tool.Kind), d.Reason))
 			if !tools.IsMutating(d.Tool.Kind) && res.Success {
-				executedReads[sig] = true
+				if d.Tool.Kind != state.ToolSearchText && d.Tool.Kind != state.ToolFindSymbol {
+					var x struct{ Path string `json:"path"` }
+					_ = json.Unmarshal(d.Tool.Input, &x)
+					executedReads[sig] = x.Path
+				}
 				readCount++
 				if readCount >= 8 {
 					readCount = 0
@@ -1615,17 +1706,16 @@ func (e *Engine) checkpointStep(ctx context.Context, step state.PlanStep, extras
 		Step:   step,
 		Extras: extras,
 	})
+	
 	if err != nil {
 		e.log(state.LogSystem, "GenerateStepArtifact", "failed to run artifact generation", "", err.Error())
 	} else if genArt.ArtifactPayload != "" {
 		snap := e.store.Snapshot()
 		if snap.ActiveTask != nil {
-			artName := fmt.Sprintf("step_%d_data.md", step.ID)
+			artName := fmt.Sprintf("step_%d_checkpoint_%s.md", step.ID, time.Now().Format("150405"))
 			artPath := filepath.Join(e.root, ".loa", "artifacts", snap.SessionID, fmt.Sprintf("task-%d", snap.ActiveTask.ID))
 			os.MkdirAll(artPath, 0755)
-			if err := os.WriteFile(filepath.Join(artPath, artName), []byte(genArt.ArtifactPayload), 0644); err == nil {
-				extras = append(extras, "You automatically wrote dense execution data to artifact: "+artName)
-			}
+			os.WriteFile(filepath.Join(artPath, artName), []byte(genArt.ArtifactPayload), 0644)
 		}
 	}
 
@@ -1710,6 +1800,9 @@ func (e *Engine) evaluateStepCompletion(ctx context.Context, step state.PlanStep
 }
 
 func (e *Engine) handleReflection(ctx context.Context, r primitives.ReflectionResult, step *state.PlanStep, extras *[]string, filesChanged map[string]bool) (string, string, error) {
+	for i := range *extras {
+		(*extras)[i] = strings.Replace((*extras)[i], "[ACTION EXECUTED - AWAITING EVALUATION]", "[ACTION EXECUTED - EVALUATED]", 1)
+	}
 	*extras = append(*extras, "REFLECTION:\n"+mustJSON(r))
 	switch r.Status {
 	case "success", "partial", "verification_required":

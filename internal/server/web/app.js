@@ -1862,8 +1862,8 @@
     updateSliderUI();
     $('#recentMessages').value = c.recent_messages || 12;
     $('#contextRecentBreadcrumbs').value = c.context_recent_breadcrumbs || 5;
-    $('#contextMinBuffer').value = c.context_minimum_buffer || 2000;
-    $('#contextSafeBudget').value = c.context_minimum_safe_budget || 4000;
+    $('#contextNetworkMarginPercent').value = c.context_network_margin_percent || 2;
+    $('#contextPromptMarginPercent').value = c.context_prompt_margin_percent || 15;
     $('#contextCodeMaxFloor').value = c.context_code_budget_max_floor || 8000;
     $('#maxPromptToolOutputBytes').value = c.max_prompt_tool_output_bytes || 30000;
     $('#memoryTopK').value = c.memory_top_k || 8;
@@ -1889,8 +1889,8 @@
     $('#memoryPoolExpansion').value = c.memory_pool_expansion_limit || 4;
     $('#contextRecentBreadcrumbs').value = c.context_recent_breadcrumbs || 5;
     $('#blindActionThreshold').value = c.blind_action_threshold || 5;
-    $('#contextMinBuffer').value = c.context_minimum_buffer || 2000;
-    $('#contextSafeBudget').value = c.context_minimum_safe_budget || 4000;
+    $('#contextNetworkMarginPercent').value = c.context_network_margin_percent || 2;
+    $('#contextPromptMarginPercent').value = c.context_prompt_margin_percent || 15;
     $('#contextCodeMaxFloor').value = c.context_code_budget_max_floor || 8000;
     $('#projectInstructions').value = c.project_instructions || '';
     $('#settingsIgnore').value = ignoreText || '';
@@ -1937,8 +1937,8 @@
       recent_messages: +$('#recentMessages').value,
       memory_top_k: +$('#memoryTopK').value,
       context_recent_breadcrumbs: +$('#contextRecentBreadcrumbs').value,
-      context_minimum_buffer: +$('#contextMinBuffer').value,
-      context_minimum_safe_budget: +$('#contextSafeBudget').value,
+      context_network_margin_percent: +$('#contextNetworkMarginPercent').value,
+      context_prompt_margin_percent: +$('#contextPromptMarginPercent').value,
       context_code_budget_max_floor: +$('#contextCodeMaxFloor').value,
       max_prompt_tool_output_bytes: +$('#maxPromptToolOutputBytes').value,
       memory_candidate_pool: +$('#memoryPool').value,
@@ -1963,8 +1963,8 @@
       memory_pool_expansion_limit: +$('#memoryPoolExpansion').value,
       context_recent_breadcrumbs: +$('#contextRecentBreadcrumbs').value,
       blind_action_threshold: +$('#blindActionThreshold').value,
-      context_minimum_buffer: +$('#contextMinBuffer').value,
-      context_minimum_safe_budget: +$('#contextSafeBudget').value,
+      context_network_margin_percent: +$('#contextNetworkMarginPercent').value,
+      context_prompt_margin_percent: +$('#contextPromptMarginPercent').value,
       context_code_budget_max_floor: +$('#contextCodeMaxFloor').value,
       project_instructions: $('#projectInstructions').value,
       permissions: {mode: $('input[name="permMode"]:checked')?.value || 'ask_selected', ask_for: ask}

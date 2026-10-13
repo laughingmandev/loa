@@ -21,12 +21,6 @@ func (e *Engine) hasStaleFiles() bool {
 }
 
 func (e *Engine) markStale(absPath string) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.staleFiles == nil {
-		e.staleFiles = make(map[string]bool)
-	}
-
 	rel, err := filepath.Rel(e.root, absPath)
 	if err != nil {
 		return
@@ -37,7 +31,26 @@ func (e *Engine) markStale(absPath string) {
 		return
 	}
 
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	// ModTime check to ignore ghost fsnotify events
+	if stat, err := os.Stat(absPath); err == nil {
+		if e.reconciledModTimes != nil {
+			if lastMod, ok := e.reconciledModTimes[rel]; ok {
+				if stat.ModTime().UnixNano() <= lastMod.UnixNano() {
+					return
+				}
+			}
+		}
+	}
+
+	if e.staleFiles == nil {
+		e.staleFiles = make(map[string]bool)
+	}
+
 	e.staleFiles[rel] = true
+	e.invalidatedPaths.Store(rel, true)
 }
 
 func (e *Engine) repairStaleFiles(ctx context.Context) error {
@@ -66,6 +79,17 @@ func (e *Engine) repairStaleFiles(ctx context.Context) error {
 	if len(filtered) == 0 {
 		return nil
 	}
+
+	e.mu.Lock()
+	if e.reconciledModTimes == nil {
+		e.reconciledModTimes = make(map[string]time.Time)
+	}
+	for _, f := range filtered {
+		if stat, err := os.Stat(filepath.Join(e.root, f)); err == nil {
+			e.reconciledModTimes[f] = stat.ModTime()
+		}
+	}
+	e.mu.Unlock()
 
 	e.log(state.LogSystem, "Watcher", "Just-In-Time reconciliation triggered for stale files", strings.Join(filtered, ", "), "")
 

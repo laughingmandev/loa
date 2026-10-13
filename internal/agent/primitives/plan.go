@@ -63,17 +63,25 @@ func NewPlanPrimitive(cfg config.Config, llmClient llm.Client, baseSystem string
 
 func (p *PlanPrimitive) Execute(ctx context.Context, pc PrimitiveContext, in PlanInput) (PlanResult, error) {
 	req := PromptRequest{
-		PrimitiveInstructions: planPrompt,
+		PrimitiveInstructions: fmt.Sprintf(planPrompt, p.cfg.MaxPrerequisitesPerStep),
 		PrimitiveInput:        in.Purpose,
 		Step:                  nil,
 		Extras:                in.Extras,
 		IncludeInstructions:   true,
 		GlobalPlanView:        true,
 	}
-	user := pc.BuildPrompt(req)
+	var user string
+	_ = user
 
 	var out PlanResult
-	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelPlanning, p.baseSystem, user, &out, func() error {
+	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelPlanning, p.baseSystem, func(repairCost int) (string, error) {
+		req.RepairReserve = repairCost
+		prompt, promptErr := pc.BuildPrompt(req)
+		if repairCost == 0 && promptErr == nil {
+			user = prompt
+		}
+		return prompt, promptErr
+	}, &out, func() error {
 		return ValidatePlanForTask(&out, in.MayModify, p.cfg.MaxPrerequisitesPerStep)
 	})
 

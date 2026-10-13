@@ -52,10 +52,18 @@ func (p *AssessBlindExecutionPrimitive) Execute(ctx context.Context, pc Primitiv
 		IncludeInstructions:   true,
 		GlobalPlanView:        true,
 	}
-	user := pc.BuildPrompt(req)
+	var user string
+	_ = user
 
 	var out AssessBlindDecision
-	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelConversation, p.baseSystem, user, &out, func() error {
+	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelConversation, p.baseSystem, func(repairCost int) (string, error) {
+		req.RepairReserve = repairCost
+		prompt, promptErr := pc.BuildPrompt(req)
+		if repairCost == 0 && promptErr == nil {
+			user = prompt
+		}
+		return prompt, promptErr
+	}, &out, func() error {
 		if out.Decision != "evaluate" && out.Decision != "continue" {
 			return fmt.Errorf("decision must be 'evaluate' or 'continue'")
 		}

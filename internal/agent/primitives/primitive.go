@@ -20,11 +20,13 @@ type PromptRequest struct {
 	PinnedEvaluation      string
 	BlindTrail            []string
 	IncludeChatHistory    int
+	OmitChatHistory       bool
+	RepairReserve         int
 }
 
 // PrimitiveContext provides access to engine-level state, context building, and telemetry.
 type PrimitiveContext interface {
-	BuildPrompt(req PromptRequest) string
+	BuildPrompt(req PromptRequest) (string, error)
 	RecordInference(primitive string, isRepair bool)
 	Log(kind state.LogKind, primitive, summary, prompt, response string)
 }

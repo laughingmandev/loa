@@ -597,7 +597,7 @@ func (s *Server) handleMemoryFrame(w http.ResponseWriter, r *http.Request) {
 		IndexKeys []string `json:"index_keys"`
 	}
 	sysPrompt := `Analyze the provided narrative frame or memory text. Extract a concise list of the most important structural and semantic keywords, concept names, identifiers, or file paths that represent its core meaning. These keys will be used for vector embedding and retrieval.`
-	_, err := s.llm.ChatJSON(r.Context(), s.cfg.Get().ModelCrawling, sysPrompt, req.Text, &ext, nil)
+	_, err := s.llm.ChatJSON(r.Context(), s.cfg.Get().ModelCrawling, sysPrompt, func(repairCost int) (string, error) { return req.Text, nil }, &ext, nil)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "failed to extract keywords: "+err.Error())
 		return

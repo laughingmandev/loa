@@ -6,11 +6,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/laughingmandev/loa/internal/agent/primitives"
 	"github.com/laughingmandev/loa/internal/config"
 	"github.com/laughingmandev/loa/internal/state"
-	"github.com/laughingmandev/loa/internal/agent/primitives"
 )
-
 
 func tailMessages(in []state.Message, n int) []state.Message {
 	if n <= 0 || len(in) <= n {
@@ -71,7 +70,7 @@ func buildPrompt(root string, cfg config.Config, snap state.AgentState, baseSyst
 		mandatory.Write(b)
 		mandatory.WriteByte('\n')
 	}
-	
+
 	if snap.ActiveTask != nil {
 		mandatory.WriteString("\n## ACTIVE TASK OVERVIEW\n")
 		fmt.Fprintf(&mandatory, "**ID:** %d | **Status:** %s | **May Modify:** %v\n", snap.ActiveTask.ID, snap.ActiveTask.Status, snap.ActiveTask.MayModify)
@@ -158,7 +157,7 @@ func buildPrompt(root string, cfg config.Config, snap state.AgentState, baseSyst
 
 		if len(snap.ActiveTask.Plan.Steps) > 0 {
 			mandatory.WriteString("\n## PLAN\n")
-			
+
 			// Contextual Plan View logic
 			if req.GlobalPlanView {
 				// Full plan for Global primitives
@@ -168,29 +167,30 @@ func buildPrompt(root string, cfg config.Config, snap state.AgentState, baseSyst
 			} else {
 				// Compressed 1-hop plan for Local primitives
 				type shortStep struct {
-					ID     uint64 `json:"id"`
-					Status string `json:"status"`
-					Goal   string `json:"goal"`
+					ID        uint64   `json:"id"`
+					Status    string   `json:"status"`
+					Goal      string   `json:"goal"`
+					DependsOn []uint64 `json:"depends_on,omitempty"`
 				}
 				type compressedPlan struct {
 					Version uint64 `json:"version"`
 					Steps   []any  `json:"steps"`
 				}
-				
+
 				var cPlan compressedPlan
 				cPlan.Version = snap.ActiveTask.Plan.Version
-				
+
 				// Identify 1-hop relationships
 				activeID := uint64(0)
 				if req.Step != nil {
 					activeID = req.Step.ID
 				}
-				
+
 				var parentIDs []uint64
 				if req.Step != nil {
 					parentIDs = req.Step.DependsOn
 				}
-				
+
 				isParent := func(id uint64) bool {
 					for _, pid := range parentIDs {
 						if pid == id {
@@ -199,7 +199,7 @@ func buildPrompt(root string, cfg config.Config, snap state.AgentState, baseSyst
 					}
 					return false
 				}
-				
+
 				for _, s := range snap.ActiveTask.Plan.Steps {
 					// 1-hop if it's the current step, a direct parent, or a direct child
 					isChild := false
@@ -209,18 +209,19 @@ func buildPrompt(root string, cfg config.Config, snap state.AgentState, baseSyst
 							break
 						}
 					}
-					
+
 					if s.ID == activeID || isParent(s.ID) || isChild {
 						cPlan.Steps = append(cPlan.Steps, s)
 					} else {
 						cPlan.Steps = append(cPlan.Steps, shortStep{
-							ID:     s.ID,
-							Status: string(s.Status),
-							Goal:   s.Goal,
+							ID:        s.ID,
+							Status:    string(s.Status),
+							Goal:      s.Goal,
+							DependsOn: s.DependsOn,
 						})
 					}
 				}
-				
+
 				b, _ := json.Marshal(cPlan)
 				mandatory.Write(b)
 				mandatory.WriteByte('\n')
@@ -256,7 +257,7 @@ func buildPrompt(root string, cfg config.Config, snap state.AgentState, baseSyst
 			}
 		}
 	}
-	
+
 	if req.PinnedEvaluation != "" {
 		mandatory.WriteString("\n=== PINNED EVALUATION (Your current goal) ===\n")
 		mandatory.WriteString(req.PinnedEvaluation)
@@ -274,63 +275,76 @@ func buildPrompt(root string, cfg config.Config, snap state.AgentState, baseSyst
 	// 1. Calculate length of Immutable Strings
 	systemLen := len([]rune(baseSystem))
 	instrLen := len([]rune(req.PrimitiveInstructions))
-	
+
 	inputLabel := req.PrimitiveInputLabel
 	if inputLabel == "" {
 		inputLabel = "\nPRIMITIVE INPUT:\n"
 	}
 	labelLen := len([]rune(inputLabel))
 	inputLen := len([]rune(req.PrimitiveInput))
-	
+
 	mandatoryLen := len([]rune(mandatory.String()))
-	
+
 	// Format strings wrappers
 	wrapperLen := len([]rune("\nPRIMITIVE INSTRUCTIONS:\n\n\n")) // The spacing between blocks
-	
-	immutableCost := systemLen + instrLen + labelLen + inputLen + mandatoryLen + wrapperLen + cfg.OutputReserve
-	
-	// Max allowed runes 
-	maxRunes := cfg.ContextBudget * 4
+
+	// Calculate base immutable cost (without heuristic safety padding)
+	immutableCost := systemLen + instrLen + labelLen + inputLen + mandatoryLen + wrapperLen + (cfg.OutputReserve * 4) + (req.RepairReserve * 4)
+
+	// Max allowed runes dynamically inherits the configured safety margins
+	maxRunes := cfg.PromptContextBudget() * 4
 	slackRunes := float64(maxRunes - immutableCost)
-	
+
 	if slackRunes < 0 {
 		return "", fmt.Errorf("immutable prompt cost (%d) exceeds context budget (%d)", immutableCost, maxRunes)
 	}
 
 	// Format Chat History requested
+	historyCount := req.IncludeChatHistory
+	if historyCount == 0 && !req.OmitChatHistory {
+		historyCount = cfg.RecentMessages
+	}
+
 	var chatRunes int
 	var chatLines []string
-	if req.IncludeChatHistory > 0 {
-		recent := tailMessages(snap.Messages, req.IncludeChatHistory)
+	if historyCount > 0 && !req.OmitChatHistory {
+		recent := tailMessages(snap.Messages, historyCount)
+		if len(recent) > 0 {
+			chatRunes += len([]rune("\nRECENT CONVERSATION:\n"))
+		}
 		for _, m := range recent {
-			line := fmt.Sprintf("[%s] %s: %s", m.CreatedAt.Format(time.RFC3339), m.Source, m.Text)
+			text := m.Text
+			if snap.ActiveTask != nil && text == snap.ActiveTask.Goal {
+				text = "[CONTENT MOVED TO ACTIVE TASK GOAL AT TOP OF PROMPT]"
+			}
+			line := fmt.Sprintf("[%s] %s: %s", m.CreatedAt.Format(time.RFC3339), m.Source, text)
 			chatLines = append(chatLines, line)
 			chatRunes += len([]rune(line)) + 1 // +1 for newline
 		}
 	}
-	
+
 	// Measure Extras
 	var extrasRunes int
 	for _, ext := range req.Extras {
 		extrasRunes += len([]rune(ext)) + 1 // +1 for newline
 	}
-	
+
 	codeCap := float64(cfg.CodeBudget * 4)
 	if codeCap <= 0 {
 		codeCap = 32000
 	}
-	
+
 	requestedChatRunes := float64(chatRunes)
 	requestedExtraRunes := float64(extrasRunes)
-	
+
 	// Apply cap to extras if it exceeds CodeBudget
 	if requestedExtraRunes > codeCap {
 		requestedExtraRunes = codeCap
 	}
-	
+
 	allocatedChat := requestedChatRunes
 	allocatedExtra := requestedExtraRunes
-	
+
 	if requestedChatRunes+requestedExtraRunes > slackRunes {
 		// Squash proportionally
 		totalRequested := requestedChatRunes + requestedExtraRunes
@@ -338,7 +352,7 @@ func buildPrompt(root string, cfg config.Config, snap state.AgentState, baseSyst
 		allocatedChat = slackRunes * chatRatio
 		allocatedExtra = slackRunes - allocatedChat
 	}
-	
+
 	// Assemble actual extras within allocatedExtra
 	var finalExtras strings.Builder
 	currentExtraRunes := 0
@@ -356,7 +370,7 @@ func buildPrompt(root string, cfg config.Config, snap state.AgentState, baseSyst
 		finalExtras.WriteByte('\n')
 		currentExtraRunes += len(runes) + 1
 	}
-	
+
 	// Assemble actual chat within allocatedChat
 	var finalChat strings.Builder
 	if len(chatLines) > 0 {
@@ -376,7 +390,7 @@ func buildPrompt(root string, cfg config.Config, snap state.AgentState, baseSyst
 			finalChat.WriteByte('\n')
 		}
 	}
-	
+
 	// Final Assembly
 	var fullPrompt strings.Builder
 	fullPrompt.WriteString(mandatory.String())
@@ -386,12 +400,12 @@ func buildPrompt(root string, cfg config.Config, snap state.AgentState, baseSyst
 	if finalChat.Len() > 0 {
 		fullPrompt.WriteString(finalChat.String())
 	}
-	
+
 	fullPrompt.WriteString("\nPRIMITIVE INSTRUCTIONS:\n")
 	fullPrompt.WriteString(req.PrimitiveInstructions)
 	fullPrompt.WriteString("\n")
 	fullPrompt.WriteString(inputLabel)
 	fullPrompt.WriteString(req.PrimitiveInput)
-	
+
 	return fullPrompt.String(), nil
 }

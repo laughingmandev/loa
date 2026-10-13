@@ -53,10 +53,18 @@ func (p *SynthesizeTaskPrimitive) Execute(ctx context.Context, pc PrimitiveConte
 		GlobalPlanView:        true,
 		PinnedEvaluation:      in.PinnedEvaluation,
 	}
-	user := pc.BuildPrompt(req)
+	var user string
+	_ = user
 
 	var out SynthesizeTaskResult
-	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelConversation, p.baseSystem, user, &out, func() error {
+	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelConversation, p.baseSystem, func(repairCost int) (string, error) {
+		req.RepairReserve = repairCost
+		prompt, promptErr := pc.BuildPrompt(req)
+		if repairCost == 0 && promptErr == nil {
+			user = prompt
+		}
+		return prompt, promptErr
+	}, &out, func() error {
 		if out.Response == "" {
 			return fmt.Errorf("response is required")
 		}

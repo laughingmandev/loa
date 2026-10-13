@@ -58,6 +58,37 @@ func isBinaryExt(path string) bool {
 	return binaryExts[ext]
 }
 
+func isBinaryFile(path string) bool {
+	if isBinaryExt(path) {
+		return true
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	buf := make([]byte, 512)
+	n, err := f.Read(buf)
+	if err != nil && err != io.EOF {
+		return false
+	}
+	return bytes.IndexByte(buf[:n], 0) != -1
+}
+
+func sanitizeOutput(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c < 0x20 && c != '\n' && c != '\r' && c != '\t') || c == 0x7F {
+			b.WriteByte('?')
+		} else {
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
+}
+
 func IsMutating(kind state.ToolKind) bool {
 	switch kind {
 	case state.ToolWriteFile, state.ToolPatchFile, state.ToolPatchASTNode, state.ToolCreateDir, state.ToolDeleteFile, state.ToolDeleteDir, state.ToolExecuteProcess, state.ToolExecuteShell:
@@ -78,6 +109,7 @@ func (m *Manager) Execute(ctx context.Context, call state.ToolCall, activeTaskID
 	b, _ := json.Marshal(call.Input)
 	req.Input = b
 	out, exit, err := m.execute(ctx, req, call.ID, activeTaskID)
+	out = sanitizeOutput(out)
 	limit := m.Config().MaxStoredToolOutputBytes
 	if limit <= 0 {
 		limit = 4 << 20
@@ -369,23 +401,23 @@ func within(root, p string) bool {
 }
 
 func (m *Manager) readFile(rel string) (string, *int, error) {
-	if isBinaryExt(rel) {
-		return "", nil, fmt.Errorf("cannot read file: %s is a binary file", rel)
-	}
 	p, e := m.resolveExisting(rel)
 	if e != nil {
 		return "", nil, e
+	}
+	if isBinaryFile(p) {
+		return "", nil, fmt.Errorf("cannot read file: %s is a binary file", rel)
 	}
 	b, e := os.ReadFile(p)
 	return string(b), nil, e
 }
 func (m *Manager) readRange(rel string, start, end int) (string, *int, error) {
-	if isBinaryExt(rel) {
-		return "", nil, fmt.Errorf("cannot read file: %s is a binary file", rel)
-	}
 	p, e := m.resolveExisting(rel)
 	if e != nil {
 		return "", nil, e
+	}
+	if isBinaryFile(p) {
+		return "", nil, fmt.Errorf("cannot read file: %s is a binary file", rel)
 	}
 	if start < 1 {
 		start = 1
@@ -481,7 +513,7 @@ func (m *Manager) searchText(pattern string, isRegex bool, limit int) (string, *
 		if d.IsDir() {
 			return nil
 		}
-		if isBinaryExt(p) {
+		if isBinaryFile(p) {
 			return nil
 		}
 		f, e := os.Open(p)
@@ -550,12 +582,12 @@ func (m *Manager) astGrepPath() string {
 }
 
 func (m *Manager) readASTNode(ctx context.Context, path, rule string) (string, *int, error) {
-	if isBinaryExt(path) {
-		return "", nil, errors.New("cannot run AST tools on binary files")
-	}
 	rel, err := m.resolveExisting(path)
 	if err != nil {
 		return "", nil, err
+	}
+	if isBinaryFile(rel) {
+		return "", nil, errors.New("cannot run AST tools on binary files")
 	}
 	tmp, err := os.CreateTemp("", "sg-rule-*.yml")
 	if err != nil {
@@ -572,12 +604,12 @@ func (m *Manager) readASTNode(ctx context.Context, path, rule string) (string, *
 }
 
 func (m *Manager) patchASTNode(ctx context.Context, path, rule, rewrite string) (string, *int, error) {
-	if isBinaryExt(path) {
-		return "", nil, errors.New("cannot run AST tools on binary files")
-	}
 	rel, err := m.resolveExisting(path)
 	if err != nil {
 		return "", nil, err
+	}
+	if isBinaryFile(rel) {
+		return "", nil, errors.New("cannot run AST tools on binary files")
 	}
 	tmp, err := os.CreateTemp("", "sg-rule-*.yml")
 	if err != nil {
@@ -626,12 +658,12 @@ func (m *Manager) writeFile(ctx context.Context, rel, content string) (string, *
 }
 
 func (m *Manager) patchFile(ctx context.Context, rel, old, newStr string, all bool) (string, *int, error) {
-	if isBinaryExt(rel) {
-		return "", nil, fmt.Errorf("cannot patch file: %s is a binary file", rel)
-	}
 	p, e := m.resolveExisting(rel)
 	if e != nil {
 		return "", nil, e
+	}
+	if isBinaryFile(p) {
+		return "", nil, fmt.Errorf("cannot patch file: %s is a binary file", rel)
 	}
 	b, e := os.ReadFile(p)
 	if e != nil {
@@ -940,15 +972,15 @@ func (m *Manager) readOutput(id uint64, offset, limit int) (string, *int, error)
 	return s[offset:end], nil, nil
 }
 func (m *Manager) analyzeLargeFile(ctx context.Context, rel, instructions string) (string, *int, error) {
-	if isBinaryExt(rel) {
-		return "", nil, fmt.Errorf("cannot analyze file: %s is a binary file", rel)
-	}
 	if m.LLM == nil {
 		return "", nil, errors.New("LLM client not available")
 	}
 	p, e := m.resolveExisting(rel)
 	if e != nil {
 		return "", nil, e
+	}
+	if isBinaryFile(p) {
+		return "", nil, fmt.Errorf("cannot analyze file: %s is a binary file", rel)
 	}
 	chunks, e := ChunkFileByLines(p, 500)
 	if e != nil {

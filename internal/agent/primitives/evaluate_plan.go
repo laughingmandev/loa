@@ -62,13 +62,21 @@ func (p *EvaluatePlanPrimitive) Execute(ctx context.Context, pc PrimitiveContext
 		IncludeInstructions:   true,
 		GlobalPlanView:        false,
 	}
-	user := pc.BuildPrompt(req)
+	var user string
+	_ = user
 
 	attempts, err := p.llm.ChatJSON(
 		ctx,
 		p.cfg.ModelPlanning,
 		p.baseSystem,
-		user,
+		func(repairCost int) (string, error) {
+		req.RepairReserve = repairCost
+		prompt, promptErr := pc.BuildPrompt(req)
+		if repairCost == 0 && promptErr == nil {
+			user = prompt
+		}
+		return prompt, promptErr
+	},
 		&ev,
 		func() error { return ValidatePlanEvaluation(&ev, in.Criteria, in.Plan) },
 	)
