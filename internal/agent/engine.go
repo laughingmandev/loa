@@ -577,10 +577,15 @@ func (e *Engine) interpretIntent(ctx context.Context, text string) (state.Intent
 	return prim.Execute(ctx, cb, primitives.IntentInput{UserText: text})
 }
 
+// ambiguityRecentMessages is how many recent chat messages ResolveAmbiguity sees.
+// Chat history is no longer injected by buildPrompt, so Ambiguity gets them through its own input.
+const ambiguityRecentMessages = 3
+
 func (e *Engine) resolveAmbiguity(ctx context.Context, text string) (primitives.AmbiguityResult, error) {
 	cb := &engineContextBuilder{e: e}
 	prim := primitives.NewAmbiguityPrimitive(e.cfg.Get(), e.llm, baseSystem)
-	return prim.Execute(ctx, cb, primitives.AmbiguityInput{UserText: text})
+	recent := formatMessageLines(tailMessages(e.store.Snapshot().Messages, ambiguityRecentMessages))
+	return prim.Execute(ctx, cb, primitives.AmbiguityInput{UserText: text, RecentConversation: recent})
 }
 
 
@@ -708,6 +713,11 @@ func (e *Engine) runTask(ctx context.Context, goal string, mayModify bool, title
 			t.Plan.Steps = append(t.Plan.Steps, step)
 		})
 	} else {
+		var err error
+		planningExtras, err = e.runPlanResearch(ctx, goal, planningExtras)
+		if err != nil {
+			return err
+		}
 		if err := e.updateAcceptanceCriteria(ctx, goal, "", planningExtras); err != nil {
 			return err
 		}
@@ -859,40 +869,53 @@ func (e *Engine) runActiveTask(ctx context.Context) error {
 			continue
 		}
 		if step == nil {
-			check, err := e.runIterativeEvaluation(ctx, !snap.ActiveTask.MayModify)
-			if err != nil {
-				return err
-			}
-			interventionOutcome, interventionReason, err = e.processInterventions(ctx, nil)
-			if err != nil {
-				return err
-			}
-			if interventionOutcome == "replan" {
-				replans++
-				if replans > e.cfg.Get().MaxPlanDepth {
-					return errors.New("maximum replans exceeded")
+			synthCompleted := false
+			for i := range snap.ActiveTask.Plan.Steps {
+				if snap.ActiveTask.Plan.Steps[i].Mode == state.StepSynthesize && snap.ActiveTask.Plan.Steps[i].Status == state.StepCompleted {
+					synthCompleted = true
+					break
 				}
-				if err := e.replan(ctx, interventionReason); err != nil {
+			}
+			var check primitives.FinalCheck
+			if synthCompleted && interventionOutcome == "none" {
+				check = primitives.FinalCheck{Complete: true, Checks: snap.ActiveTask.AcceptanceChecks}
+			} else {
+				var err error
+				check, err = e.runIterativeEvaluation(ctx, !snap.ActiveTask.MayModify)
+				if err != nil {
 					return err
 				}
-				continue
-			}
-			if interventionOutcome != "none" {
-				continue // final check was produced before the newly consumed guidance
-			}
-			if !check.Complete {
-				replans++
-				if replans > e.cfg.Get().MaxPlanDepth {
-					return fmt.Errorf("final completion check repeatedly failed: %s", check.Reason)
-				}
-				reason := check.Reason
-				if len(check.Missing) > 0 {
-					reason += "; " + strings.Join(check.Missing, "; ")
-				}
-				if err := e.replan(ctx, "Final completion check failed: "+reason); err != nil {
+				interventionOutcome, interventionReason, err = e.processInterventions(ctx, nil)
+				if err != nil {
 					return err
 				}
-				continue
+				if interventionOutcome == "replan" {
+					replans++
+					if replans > e.cfg.Get().MaxPlanDepth {
+						return errors.New("maximum replans exceeded")
+					}
+					if err := e.replan(ctx, interventionReason); err != nil {
+						return err
+					}
+					continue
+				}
+				if interventionOutcome != "none" {
+					continue // final check was produced before the newly consumed guidance
+				}
+				if !check.Complete {
+					replans++
+					if replans > e.cfg.Get().MaxPlanDepth {
+						return fmt.Errorf("final completion check repeatedly failed: %s", check.Reason)
+					}
+					reason := check.Reason
+					if len(check.Missing) > 0 {
+						reason += "; " + strings.Join(check.Missing, "; ")
+					}
+					if err := e.replan(ctx, "Final completion check failed: "+reason); err != nil {
+						return err
+					}
+					continue
+				}
 			}
 			err = e.finishTask(ctx, check)
 			if err != nil && err.Error() == "continue_synthesis" {
@@ -1178,7 +1201,7 @@ func (e *Engine) prepareStep(ctx context.Context, idx int, step state.PlanStep) 
 		if !snap.ActiveTask.MayModify && step.Mode == state.StepModify {
 			return fmt.Errorf("read-only task cannot execute modify step %q", step.Title)
 		}
-		if snap.ActiveTask.ComplexityMode == "Fast" {
+		if snap.ActiveTask.ComplexityMode == "Fast" || step.Mode == state.StepSynthesize {
 			e.store.UpdateActiveTask(func(t *state.TaskState) {
 				for i := range t.Plan.Steps {
 					if t.Plan.Steps[i].ID == step.ID {
@@ -1321,13 +1344,17 @@ func (e *Engine) replan(ctx context.Context, reason string) error {
 	}
 	completed := []state.PlanStep{}
 	for _, s := range snap.ActiveTask.Plan.Steps {
-		if s.Status == state.StepCompleted {
+		if s.Status == state.StepCompleted && s.Mode != state.StepSynthesize {
 			completed = append(completed, s)
 		}
 	}
 	critique := reason
 	for attempt := 0; attempt < e.cfg.Get().MaxPlanDepth; attempt++ {
-		purpose := fmt.Sprintf("TASK GOAL:\n%s\n\nTASK MODIFICATION AUTHORIZATION: %v\n\nCOMPLETED STEPS (immutable history):\n%s\n\nWHY REPLAN IS NEEDED / CRITIQUE:\n%s\n\nCreate only the remaining steps. Preserve completed work unless current evidence shows it is invalid.", snap.ActiveTask.Goal, snap.ActiveTask.MayModify, mustJSON(completed), critique)
+		replanWiringInstructions := "Create only the remaining steps. Preserve completed work unless current evidence shows it is invalid."
+		if len(completed) > 0 {
+			replanWiringInstructions += fmt.Sprintf("\nIMPORTANT REPLAN WIRING RULE: Do NOT create redundant steps merely to re-verify or re-confirm already completed steps. In this draft, `depends_on` (1-based positions) is ONLY for dependencies between your newly drafted steps. Immediately after this draft, a dedicated `LinkReplan` substep will wire your new steps directly to the relevant COMPLETED STEPS so their execution summaries are automatically injected as PREREQUISITE RESULTS. Keep the Max Prerequisites Rule (%d max total dependencies per step) in mind: every root of your new steps (`depends_on: []`) will be linked to at least one completed step, and any new step's internal dependencies plus its linked completed steps cannot exceed %d.", e.cfg.Get().MaxPrerequisitesPerStep, e.cfg.Get().MaxPrerequisitesPerStep)
+		}
+		purpose := fmt.Sprintf("TASK GOAL:\n%s\n\nTASK MODIFICATION AUTHORIZATION: %v\n\nCOMPLETED STEPS (immutable history):\n%s\n\nWHY REPLAN IS NEEDED / CRITIQUE:\n%s\n\n%s", snap.ActiveTask.Goal, snap.ActiveTask.MayModify, mustJSON(completed), critique, replanWiringInstructions)
 		cb := &engineContextBuilder{e: e}
 		prim := primitives.NewPlanPrimitive(e.cfg.Get(), e.llm, baseSystem)
 		draft, err := prim.Execute(ctx, cb, primitives.PlanInput{
@@ -1351,11 +1378,23 @@ func (e *Engine) replan(ctx context.Context, reason string) error {
 
 		_ = e.tagPlanDraftTargets(ctx, &draft)
 
-		var inherited []uint64
+		newPart := e.planFromDraft(draft, snap.ActiveTask.Plan.Version+1, 0, nil)
 		if len(completed) > 0 {
-			inherited = append(inherited, completed[len(completed)-1].ID)
+			linkPrim := primitives.NewLinkReplanPrimitive(e.cfg.Get(), e.llm, baseSystem)
+			linkRes, err := linkPrim.Execute(ctx, &engineContextBuilder{e: e}, primitives.LinkReplanInput{
+				CompletedSteps: completed,
+				StepResults:    snap.ActiveTask.StepResults,
+				NewSteps:       newPart.Steps,
+			})
+			if err != nil {
+				return err
+			}
+			if linkRes.Action == "replan" {
+				critique = strings.TrimSpace(linkRes.Reason + "\n" + linkRes.ReplanInstructions)
+				continue
+			}
+			newPart.Steps = primitives.ApplyLinkReplanMappings(newPart.Steps, linkRes.Mappings)
 		}
-		newPart := e.planFromDraft(draft, snap.ActiveTask.Plan.Version+1, 0, inherited)
 		candidate := state.Plan{Version: newPart.Version, Steps: append(append([]state.PlanStep{}, completed...), newPart.Steps...)}
 
 		evalInput := fmt.Sprintf("TASK GOAL:\n%s\n\nREPLANNED FULL PLAN:\n%s\n\nREPLAN TRIGGER:\n%s", snap.ActiveTask.Goal, mustJSON(candidate), reason)
@@ -1397,7 +1436,7 @@ func (e *Engine) executeStep(ctx context.Context, stepID uint64) (string, string
 		}
 	}
 	
-	if !alreadyInjected {
+	if !alreadyInjected && step.Mode != state.StepSynthesize {
 		e.addMemory(ctx, state.MemoryStep, step.Title+": "+step.Goal, nil, &step.ID, state.MessageAgent)
 	}
 
@@ -1409,6 +1448,8 @@ func (e *Engine) executeStep(ctx context.Context, stepID uint64) (string, string
 		extras = []string{}
 	}
 	defer func() { e.store.SetActiveTaskExtras(extras) }()
+	// Frozen once per step execution so read_history offsets stay stable while new messages arrive.
+	historyMsgs := historyMessages(snap)
 	
 	retrievalRound := 0
 	deniedSignature := ""
@@ -1496,6 +1537,9 @@ func (e *Engine) executeStep(ctx context.Context, stepID uint64) (string, string
 		case "task_summaries":
 			deniedSignature = ""
 			extras = append(extras, e.taskSummaryText())
+		case "read_history":
+			deniedSignature = ""
+			extras = append(extras, e.readHistory(ctx, historyMsgs, d.Offset, d.Count, d.Reason))
 		case "ask_user":
 			deniedSignature = ""
 			ans, err := e.askUser(ctx, d.AskUserQuestion)
@@ -1658,22 +1702,85 @@ func (e *Engine) executeStep(ctx context.Context, stepID uint64) (string, string
 			}
 		case "step_complete":
 			if snap.ActiveTask.ComplexityMode == "Fast" {
+				synthExtras := make([]string, len(stepExtras))
+				copy(synthExtras, stepExtras)
+				if strings.TrimSpace(d.CompletionSummary) != "" {
+					synthExtras = append(synthExtras, "STEP COMPLETION SUMMARY:\n"+d.CompletionSummary)
+				}
+				if len(artifacts) > 0 && snap.ActiveTask != nil {
+					artDir := filepath.Join(e.root, ".loa", "artifacts", snap.SessionID, fmt.Sprintf("task-%d", snap.ActiveTask.ID))
+					for _, name := range artifacts {
+						if b, err := os.ReadFile(filepath.Join(artDir, name)); err == nil && strings.TrimSpace(string(b)) != "" {
+							synthExtras = append(synthExtras, fmt.Sprintf("ARTIFACT CONTENT (%s):\n%s", name, string(b)))
+						}
+					}
+				}
 				synPrim := primitives.NewSynthesizeTaskPrimitive(e.cfg.Get(), e.llm, baseSystem)
 				synRes, err := synPrim.Execute(ctx, &engineContextBuilder{e: e}, primitives.SynthesizeTaskInput{
 					Goal:             step.Goal,
 					PinnedEvaluation: pinnedEvaluation,
-					Extras:           extras,
+					Extras:           synthExtras,
 				})
 				if err != nil {
 					return "", "", err
 				}
+				fastResult := state.StepResult{
+					StepID:       step.ID,
+					Success:      true,
+					Summary:      coalesce(strings.TrimSpace(d.CompletionSummary), synRes.Response),
+					FilesRead:    keys(filesRead),
+					FilesChanged: keys(filesChanged),
+					Artifacts:    artifacts,
+					ToolCallIDs:  toolIDs,
+					CreatedAt:    time.Now(),
+				}
+				e.store.UpdateActiveTask(func(t *state.TaskState) {
+					t.StepResults = append(t.StepResults, fastResult)
+					for i := range t.Plan.Steps {
+						if t.Plan.Steps[i].ID == step.ID {
+							t.Plan.Steps[i].Status = state.StepCompleted
+						}
+					}
+				})
+				snap = e.store.Snapshot()
 				e.addAgentMessage(synRes.Response, false)
-				summaryPurpose := "TASK:\n" + step.Goal + "\n\nRESULTS:\n" + mustJSON(compactStepResults(snap.ActiveTask.StepResults))
+				summaryPurpose := "TASK:\n" + step.Goal + "\n\nRESULTS:\n" + mustJSON(compactStepResults(snap.ActiveTask.StepResults)) + "\n\nFINAL RESPONSE:\n" + synRes.Response
 				summaryText := e.finalizeTaskMemory(ctx, snap, baseSystem, summaryPurpose)
 				e.addMemory(ctx, state.MemoryTask, summaryText+"\n\nOutput:\n"+synRes.Response, nil, nil, state.MessageAgent)
 				e.store.CompleteActiveTask(state.TaskCompleted)
 				extras = []string{}
 				return "fast_complete", "", nil
+			}
+
+			if step.Mode == state.StepSynthesize {
+				snap := e.store.Snapshot()
+				if snap.ActiveTask != nil {
+					artPath := filepath.Join(e.root, ".loa", "artifacts", snap.SessionID, fmt.Sprintf("task-%d", snap.ActiveTask.ID), "final_response.md")
+					if b, err := os.ReadFile(artPath); err != nil || strings.TrimSpace(string(b)) == "" {
+						extras = append(extras, "ERROR: You called step_complete for Final Synthesis, but final_response.md does not exist or is empty. Use artifact_write with name=\"final_response.md\" before calling step_complete.")
+						continue
+					}
+				}
+				synthResult := state.StepResult{
+					StepID:       step.ID,
+					Success:      true,
+					Summary:      coalesce(strings.TrimSpace(d.CompletionSummary), "Composed final response in final_response.md."),
+					FilesRead:    keys(filesRead),
+					FilesChanged: keys(filesChanged),
+					Artifacts:    artifacts,
+					ToolCallIDs:  toolIDs,
+					CreatedAt:    time.Now(),
+				}
+				e.store.UpdateActiveTask(func(t *state.TaskState) {
+					t.StepResults = append(t.StepResults, synthResult)
+					for i := range t.Plan.Steps {
+						if t.Plan.Steps[i].ID == step.ID {
+							t.Plan.Steps[i].Status = state.StepCompleted
+						}
+					}
+				})
+				extras = []string{}
+				return "done", "", nil
 			}
 
 			r, err := e.evaluateStepCompletion(ctx, step, d.CompletionSummary, extras)
@@ -1997,6 +2104,7 @@ func (e *Engine) runIterativeEvaluation(ctx context.Context, isReadOnly bool) (p
 			Purpose:    purpose,
 			Checklist:  checklist,
 			IsReadOnly: isReadOnly,
+			Extras:     extras,
 		})
 		if err != nil {
 			return primitives.FinalCheck{}, err
@@ -2045,6 +2153,28 @@ func (e *Engine) finishTask(ctx context.Context, check primitives.FinalCheck) er
 	}
 
 	if synthStep == nil {
+		consumed := make(map[uint64]bool)
+		for _, s := range snap.ActiveTask.Plan.Steps {
+			if s.Status == state.StepCompleted && s.Mode != state.StepSynthesize {
+				for _, dep := range s.DependsOn {
+					consumed[dep] = true
+				}
+			}
+		}
+		var leafDeps []uint64
+		for _, s := range snap.ActiveTask.Plan.Steps {
+			if s.Status == state.StepCompleted && s.Mode != state.StepSynthesize && !consumed[s.ID] {
+				leafDeps = append(leafDeps, s.ID)
+			}
+		}
+		maxDeps := e.cfg.Get().MaxPrerequisitesPerStep
+		if maxDeps <= 0 {
+			maxDeps = 4
+		}
+		if len(leafDeps) > maxDeps {
+			leafDeps = leafDeps[len(leafDeps)-maxDeps:]
+		}
+
 		newID := e.store.NextID()
 		step := state.PlanStep{
 			ID:             newID,
@@ -2054,7 +2184,8 @@ func (e *Engine) finishTask(ctx context.Context, check primitives.FinalCheck) er
 			ExpectedResult: "A final_response.md artifact.",
 			Mode:           state.StepSynthesize,
 			Status:         state.StepPending,
-			ExpectedTools:  []state.ToolKind{state.ToolSearchTaskSteps, state.ToolReadTaskStep, state.ToolArtifactRead, state.ToolArtifactWrite, state.ToolArtifactAppend, state.ToolArtifactPatch},
+			DependsOn:      leafDeps,
+			ExpectedTools:  []state.ToolKind{state.ToolSearchTaskSteps, state.ToolReadTaskStep, state.ToolArtifactList, state.ToolArtifactSearch, state.ToolArtifactRead, state.ToolArtifactWrite, state.ToolArtifactAppend, state.ToolArtifactPatch},
 		}
 		e.store.UpdateActiveTask(func(t *state.TaskState) {
 			t.Plan.Steps = append(t.Plan.Steps, step)
@@ -2077,7 +2208,7 @@ func (e *Engine) finishTask(ctx context.Context, check primitives.FinalCheck) er
 	}
 
 	goal := snap.ActiveTask.Goal
-	summaryPurpose := "TASK:\n" + goal
+	summaryPurpose := "TASK:\n" + goal + "\n\nRESULTS:\n" + mustJSON(compactStepResults(snap.ActiveTask.StepResults)) + "\n\nFINAL RESPONSE:\n" + answer
 	summaryText := e.finalizeTaskMemory(ctx, snap, baseSystem, summaryPurpose)
 
 	e.store.CompleteActiveTask(state.TaskCompleted)

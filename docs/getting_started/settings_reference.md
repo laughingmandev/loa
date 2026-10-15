@@ -103,7 +103,7 @@ For non-OpenAI-host URLs, the current client also sends this value to the chat e
 
 ### Recent Messages
 
-`recent_messages` is the maximum tail of chat messages considered by the context builder. The newest messages are added first while space remains.
+`recent_messages` (default 10) is the maximum, and the default, number of chat messages a single `read_history` call returns. Chat history is not injected into prompts; agents read it on demand.
 
 ### Recent Task Breadcrumbs
 
@@ -113,7 +113,7 @@ Direct DAG prerequisites are separate: completed results from the current step's
 
 ### Context Margin Percentages
 
-The builder reserves safety buffers to ensure prompt generation stays within limits. `context_network_margin_percent` (default 2%) is applied to avoid absolute hardware/backend boundaries. `context_prompt_margin_percent` (default 15%) is applied on top of that to absorb heuristic variance during local token counting.
+The builder reserves safety buffers to ensure prompt generation stays within limits. `context_network_margin_percent` (labeled **Context Allocation Margin %** in the Web UI, default 2%) is applied to avoid absolute hardware/backend boundaries. `context_prompt_margin_percent` (labeled **Context Prompt Margin %**, default 15%) is applied on top of that to absorb heuristic variance during local token counting.
 
 ### Code Budget Max Floor
 

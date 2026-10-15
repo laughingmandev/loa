@@ -85,7 +85,7 @@ This is why DAG edges are also context topology: changing a dependency can chang
 
 ### Chat History
 
-`recent_messages` controls how many recent chat messages are considered. The builder adds the newest messages first until the available prompt budget is exhausted.
+The context builder does not inject chat history into prompts. Agents pull it with the `read_history` action (available in step execution and in the pre-planning research loop): `offset` 0 is the newest message, `count` is optional and capped by `recent_messages`. The requested messages are consolidated against the agent's stated reason, and only that consolidated result is added as extra context. `ResolveAmbiguity` is the one exception: it receives the last 3 messages through its own input.
 
 ### Extra Context
 
@@ -103,7 +103,7 @@ The current builder estimates prompt size using an approximate rune-to-token con
 - `output_reserve` for model output,
 - any immutable overhead required for the current inference (such as the dynamically calculated cost of a JSON repair stack trace).
 
-The resulting prompt allowance represents the available `slackRunes`. Loa uses **proportional token budgeting** to allocate this slack space dynamically between Chat History and Extra Context (retrieved memories/tools). `code_budget` limits the absolute maximum of how much extra retrieved/tool material can be injected, but the dynamic squashing ensures that large, unavoidable overheads (like repair loops) smoothly compress the available context rather than blowing past the context window.
+The resulting prompt allowance represents the available `slackRunes` for Extra Context (retrieved memories, tool outputs, and on-demand consolidated history reads). `code_budget` limits the maximum amount of extra material that can be injected, while dynamic squashing ensures that large, unavoidable overheads (like JSON repair loops) smoothly compress the available extra context rather than blowing past the context window.
 
 This means a task can remain within its configured context budget on every individual inference while still making hundreds of model requests over the lifetime of the task.
 

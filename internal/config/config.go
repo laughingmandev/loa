@@ -45,6 +45,7 @@ type Config struct {
 	ForceJSONMode         bool             `json:"force_json_mode"`
 	MaxPlanDepth          int              `json:"max_plan_depth"`
 	MaxExecutionLoops     int              `json:"max_execution_loops"`
+	PlanResearchMaxLoops  int              `json:"plan_research_max_loops"`
 	ModelTimeoutSeconds   int              `json:"model_timeout_seconds"`
 	CommandTimeoutSeconds          int              `json:"command_timeout_seconds"`
 	MemoryLTSDecayHalfLifeHours    float64          `json:"memory_lts_decay_half_life_hours"`
@@ -83,12 +84,13 @@ func Default() Config {
 		ContextNetworkMarginPercent: 2,
 		OutputReserve:         4000,
 		CodeBudget:            8000,
-		RecentMessages:        12,
+		RecentMessages:        10,
 		MemoryTopK:            8,
 		MemoryCandidatePool:   30,
 		JSONRepairAttempts:    7,
 		MaxPlanDepth:          25,
 		MaxExecutionLoops:     80,
+		PlanResearchMaxLoops:  6,
 		ModelTimeoutSeconds:   600,
 		CommandTimeoutSeconds:          120,
 		MemoryLTSDecayHalfLifeHours:    336.0,
@@ -234,7 +236,7 @@ func (c *Config) normalize() {
 		c.CodeBudget = 8000
 	}
 	if c.RecentMessages <= 0 {
-		c.RecentMessages = 12
+		c.RecentMessages = 10
 	}
 	if c.MemoryTopK <= 0 {
 		c.MemoryTopK = 8
@@ -247,6 +249,9 @@ func (c *Config) normalize() {
 	}
 	if c.MaxPlanDepth <= 0 {
 		c.MaxPlanDepth = 25
+	}
+	if c.PlanResearchMaxLoops <= 0 {
+		c.PlanResearchMaxLoops = 6
 	}
 	if c.ModelTimeoutSeconds <= 0 {
 		c.ModelTimeoutSeconds = 600

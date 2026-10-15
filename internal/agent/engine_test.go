@@ -119,6 +119,7 @@ func TestSimpleTaskLifecycle(t *testing.T) {
 	fake := &scriptedLLM{text: "Implemented and verified.", json: []string{
 		`{"intents":["task"],"answers_pending_question":false,"ambiguous":false,"reason":"explicit task"}`,
 		`{"items":[]}`,
+		`{"action":"ready_to_plan","reason":"task is self-contained"}`,
 		`{"criteria":["The requested change is completed and verified."],"reason":"captures the requested outcome"}`,
 		`{"mappings":[]}`,
 		`{"target":"do task"}`,
@@ -135,16 +136,8 @@ func TestSimpleTaskLifecycle(t *testing.T) {
 		`{"facts":[],"decisions":[],"constraints":[],"open_issues":[]}`,
 		`{"index_keys":["task", "completed"],"reason":"keywords for step summary"}`,
 		`{"action":"complete","reason":"all requested work is complete","checklist":[{"criterion_id":1,"status":"verified","evidence":["completed step result confirms the requested outcome"]}]}`,
-		`{"executable":true,"reason":"synthesis step is executable"}`,
-		`{"index_keys":["synthesis"],"reason":"step memory"}`,
 		`{"action":"tool","reason":"writing final response","tool":{"kind":"artifact_write","input":{"name":"final_response.md","content":"Implemented and verified."}}}`,
 		`{"action":"step_complete","reason":"done","completion_summary":"wrote final response"}`,
-		`{"status":"success","reason":"synthesis is done","assumptions":[],"suggested_recovery":"","verification_need":""}`,
-		`{"artifact_payload":""}`,
-		`{"summary":"Finished synthesis.","facts_learned":[],"decisions":[]}`,
-		`{"facts":[],"decisions":[],"constraints":[],"open_issues":[]}`,
-		`{"index_keys":["synthesis", "complete"],"reason":"keywords for step summary"}`,
-		`{"action":"complete","reason":"all requested work is complete","checklist":[{"criterion_id":1,"status":"verified","evidence":["completed step result confirms the requested outcome"]}]}`,
 		`{"summary":"Completed the requested task and verified the result."}`,
 		`{"index_keys":["completed", "verified"],"reason":"extracted keywords"}`,
 		`{"index_keys":["final", "response"],"reason":"task memory"}`,
@@ -567,6 +560,7 @@ func TestReadOnlyTaskUsesStructuredTaskLifecycle(t *testing.T) {
 	fake := &scriptedLLM{text: "Analysis complete.", json: []string{
 		`{"intents":["task"],"answers_pending_question":false,"ambiguous":false,"reason":"structured read-only analysis"}`,
 		`{"items":[]}`,
+		`{"action":"ready_to_plan","reason":"task is self-contained"}`,
 		`{"criteria":["The project architecture is analyzed from source code."],"reason":"captures the requested read-only outcome"}`,
 		`{"mappings":[]}`,
 		`{"target":"analyze architecture"}`,
@@ -583,16 +577,8 @@ func TestReadOnlyTaskUsesStructuredTaskLifecycle(t *testing.T) {
 		`{"facts":["The engine coordinates agent execution."],"decisions":[],"constraints":[],"open_issues":[]}`,
 		`{"index_keys":["analyzed", "architecture"],"reason":"keys for step summary"}`,
 		`{"action":"complete","reason":"analysis is complete","checklist":[{"criterion_id":1,"status":"verified","evidence":["step output has the answer"]}]}`,
-		`{"executable":true,"reason":"synthesis step is executable"}`,
-		`{"index_keys":["synthesis"],"reason":"step memory"}`,
 		`{"action":"tool","reason":"writing final response","tool":{"kind":"artifact_write","input":{"name":"final_response.md","content":"Analysis complete."}}}`,
 		`{"action":"step_complete","reason":"done","completion_summary":"wrote final response"}`,
-		`{"status":"success","reason":"synthesis is done","assumptions":[],"suggested_recovery":"","verification_need":""}`,
-		`{"artifact_payload":""}`,
-		`{"summary":"Finished synthesis.","facts_learned":[],"decisions":[]}`,
-		`{"facts":[],"decisions":[],"constraints":[],"open_issues":[]}`,
-		`{"index_keys":["synthesis", "complete"],"reason":"keywords for step summary"}`,
-		`{"action":"complete","reason":"analysis is complete","checklist":[{"criterion_id":1,"status":"verified","evidence":["step output has the answer"]}]}`,
 		`{"summary":"Completed a source-grounded architecture analysis."}`,
 		`{"index_keys":["architecture", "analysis"],"reason":"extracted keys"}`,
 		`{"index_keys":["final", "response"],"reason":"task memory"}`,
@@ -743,3 +729,280 @@ func TestInterventionSupersedesPendingApproval(t *testing.T) {
 		t.Fatalf("superseded write unexpectedly executed: %v", err)
 	}
 }
+
+func TestValidateLinkReplanRules(t *testing.T) {
+	completed := []state.PlanStep{
+		{ID: 10, Title: "Investigate A", Status: state.StepCompleted},
+		{ID: 11, Title: "Investigate B", Status: state.StepCompleted},
+		{ID: 12, Title: "Investigate C", Status: state.StepCompleted},
+		{ID: 13, Title: "Investigate D", Status: state.StepCompleted},
+		{ID: 14, Title: "Investigate E", Status: state.StepCompleted},
+	}
+	newSteps := []state.PlanStep{
+		{ID: 20, Title: "Synthesize root", DependsOn: nil, Status: state.StepPending},
+		{ID: 21, Title: "Verify output", DependsOn: []uint64{20}, Status: state.StepPending},
+	}
+
+	// 1. Root new step left unlinked must fail validation (prevents disconnected graph).
+	unlinkedRoot := primitives.LinkReplanResult{
+		Mappings: []primitives.ReplanStepMapping{
+			{StepID: 21, CompletedDependsOn: []uint64{10}},
+		},
+		Reason: "missed root",
+	}
+	if err := primitives.ValidateLinkReplan(&unlinkedRoot, completed, newSteps, 4); err == nil || !strings.Contains(err.Error(), "New root step 20") {
+		t.Fatalf("expected unlinked root step rejection, got %v", err)
+	}
+
+	// 2. Putting a completed step ID in step_id must fail validation.
+	wrongDirection := primitives.LinkReplanResult{
+		Mappings: []primitives.ReplanStepMapping{
+			{StepID: 10, CompletedDependsOn: []uint64{20}},
+		},
+		Reason: "reversed",
+	}
+	if err := primitives.ValidateLinkReplan(&wrongDirection, completed, newSteps, 4); err == nil || !strings.Contains(err.Error(), "already-completed step") {
+		t.Fatalf("expected reversed step_id rejection, got %v", err)
+	}
+
+	// 3. Putting a new step ID in completed_depends_on must fail validation.
+	newInCompleted := primitives.LinkReplanResult{
+		Mappings: []primitives.ReplanStepMapping{
+			{StepID: 20, CompletedDependsOn: []uint64{10}},
+			{StepID: 21, CompletedDependsOn: []uint64{20}},
+		},
+		Reason: "new step in completed_depends_on",
+	}
+	if err := primitives.ValidateLinkReplan(&newInCompleted, completed, newSteps, 4); err == nil || !strings.Contains(err.Error(), "is a new pending step") {
+		t.Fatalf("expected new step in completed_depends_on rejection, got %v", err)
+	}
+
+	// 4. Exceeding MaxPrerequisitesPerStep (internal + completed) must fail validation.
+	exceedsLimit := primitives.LinkReplanResult{
+		Mappings: []primitives.ReplanStepMapping{
+			{StepID: 20, CompletedDependsOn: []uint64{10}},
+			{StepID: 21, CompletedDependsOn: []uint64{10, 11, 12, 13}}, // 1 internal + 4 completed = 5 > 4
+		},
+		Reason: "too many deps on step 21",
+	}
+	if err := primitives.ValidateLinkReplan(&exceedsLimit, completed, newSteps, 4); err == nil || !strings.Contains(err.Error(), "exceeds the maximum allowed 4 prerequisites") {
+		t.Fatalf("expected max prerequisites rejection, got %v", err)
+	}
+
+	// 5. Valid wiring across multiple completed branches succeeds and merges cleanly.
+	validRes := primitives.LinkReplanResult{
+		Mappings: []primitives.ReplanStepMapping{
+			{StepID: 20, CompletedDependsOn: []uint64{11, 12, 13}},
+			{StepID: 21, CompletedDependsOn: []uint64{10}},
+		},
+		Reason: "wired completed branches into new steps",
+	}
+	if err := primitives.ValidateLinkReplan(&validRes, completed, newSteps, 4); err != nil {
+		t.Fatalf("expected valid wiring to pass, got %v", err)
+	}
+	wired := primitives.ApplyLinkReplanMappings(newSteps, validRes.Mappings)
+	if len(wired[0].DependsOn) != 3 || wired[0].DependsOn[0] != 11 || wired[0].DependsOn[1] != 12 || wired[0].DependsOn[2] != 13 {
+		t.Fatalf("unexpected dependencies on wired root step: %+v", wired[0].DependsOn)
+	}
+	if len(wired[1].DependsOn) != 2 || wired[1].DependsOn[0] != 10 || wired[1].DependsOn[1] != 20 {
+		t.Fatalf("unexpected dependencies on wired child step: %+v", wired[1].DependsOn)
+	}
+}
+
+func TestReplanWiresMultipleCompletedBranchesAndFeedsPrerequisites(t *testing.T) {
+	root := t.TempDir()
+	cfgv := config.Default()
+	cfgv.ModelPlanning = "fake"
+	cfgv.MaxPrerequisitesPerStep = 4
+	cfg := config.NewManager(cfgv)
+
+	agState := state.NewAgentState()
+	agState.NextID = 100 // deterministic new step IDs: 100, 101
+	st := state.NewStore(root, agState)
+	st.SetActiveTask(&state.TaskState{
+		ID:        1,
+		Goal:      "integrate completed investigations and apply fix",
+		MayModify: true,
+		Status:    state.TaskRunning,
+		AcceptanceCriteria: []state.AcceptanceCriterion{
+			{ID: 1, Requirement: "Fix is implemented and verified using findings from branches A and B."},
+		},
+		Plan: state.Plan{
+			Version: 2,
+			Steps: []state.PlanStep{
+				{ID: 10, Title: "Base investigation", Goal: "inspect root", Mode: state.StepInvestigate, Status: state.StepCompleted},
+				{ID: 11, Title: "Branch A analysis", Goal: "analyze module A", Mode: state.StepInvestigate, DependsOn: []uint64{10}, Status: state.StepCompleted},
+				{ID: 12, Title: "Branch B analysis", Goal: "analyze module B", Mode: state.StepInvestigate, DependsOn: []uint64{10}, Status: state.StepCompleted},
+				{ID: 50, Title: "Stale pending step", Goal: "old broken step", Mode: state.StepModify, DependsOn: []uint64{11}, Status: state.StepPending},
+			},
+		},
+		StepResults: []state.StepResult{
+			{StepID: 10, Success: true, Summary: "Root structure identified."},
+			{StepID: 11, Success: true, Summary: "Branch A requires updating handler A."},
+			{StepID: 12, Success: true, Summary: "Branch B requires updating config B."},
+		},
+	})
+
+	fake := &scriptedLLM{json: []string{
+		// 1. PlanPrimitive (Operation: "Replan")
+		`{"steps":[
+			{"title":"Implement integrated fix","goal":"apply changes for A and B","reason":"combine findings","expected_result":"code updated","mode":"modify","depends_on":[],"expected_tools":["write_file"]},
+			{"title":"Verify integrated fix","goal":"run verification","reason":"confirm fix","expected_result":"tests pass","mode":"verify","depends_on":[1],"expected_tools":["execute_process"]}
+		],"reason":"replanned remaining work"}`,
+		// 2. TagTargetEntities
+		`{"tags":[{"step_id":1,"entities":["handler.go"]},{"step_id":2,"entities":["handler_test.go"]}]}`,
+		// 3. LinkReplanPrimitive (wires new step 103 -> completed [11, 12], and new step 104 -> completed [10])
+		`{"mappings":[
+			{"step_id":103,"completed_depends_on":[11,12]},
+			{"step_id":104,"completed_depends_on":[10]}
+		],"reason":"link root modify step to completed leaf branches 11 and 12, and verify step to base 10"}`,
+		// 4. EvaluatePlanPrimitive
+		`{"valid":true,"reason":"all criteria covered and graph connected","coverage":[{"criterion_id":1,"step_ids":[103,104],"reason":"steps 103 and 104 implement and verify the fix"}],"issues":[]}`,
+	}}
+
+	eng := New(root, st, memory.NewStore(root, 336.0, 0.03), cfg, fake, tools.New(root, nil, cfg.Get, nil), nil)
+	if err := eng.replan(context.Background(), "LinkSteps escalated to replan"); err != nil {
+		t.Fatalf("replan failed: %v", err)
+	}
+
+	snap := st.Snapshot()
+	steps := snap.ActiveTask.Plan.Steps
+	if len(steps) != 5 {
+		t.Fatalf("expected 3 completed + 2 new steps = 5 steps, got %d: %+v", len(steps), steps)
+	}
+	step103 := steps[3]
+	step104 := steps[4]
+	if step103.ID != 103 || len(step103.DependsOn) != 2 || step103.DependsOn[0] != 11 || step103.DependsOn[1] != 12 {
+		t.Fatalf("expected step 103 to depend on completed steps [11, 12], got %+v", step103)
+	}
+	if step104.ID != 104 || len(step104.DependsOn) != 2 || step104.DependsOn[0] != 10 || step104.DependsOn[1] != 103 {
+		t.Fatalf("expected step 104 to depend on [10, 103], got %+v", step104)
+	}
+
+	// Verify that getPrerequisites now feeds the completed step results into step 103!
+	prereqs := getPrerequisites(&step103, snap.ActiveTask.StepResults)
+	if len(prereqs) != 2 || prereqs[0].StepID != 11 || prereqs[1].StepID != 12 {
+		t.Fatalf("expected prerequisites for step 103 to include completed steps 11 and 12, got %+v", prereqs)
+	}
+}
+
+func TestLinkStepsIgnoresLegacyCompletedStepExceedingMaxPrerequisites(t *testing.T) {
+	cfg := config.Default()
+	cfg.ModelPlanning = "fake"
+	cfg.MaxPrerequisitesPerStep = 4
+
+	fake := &scriptedLLM{json: []string{
+		`{"mappings":[{"receiver_id":30,"depends_on":[21,22]}],"reason":"link receiver 30 to decomposed steps"}`,
+	}}
+
+	prim := primitives.NewLinkStepsPrimitive(cfg, fake, "system")
+	pc := &mockPrimitiveContext{}
+	res, err := prim.Execute(context.Background(), pc, primitives.LinkStepsInput{
+		OriginalStepID:    20,
+		OriginalReceivers: []uint64{30},
+		DecomposedSteps: []state.PlanStep{
+			{ID: 21, Title: "Substep 1", DependsOn: []uint64{10}, Status: state.StepPending},
+			{ID: 22, Title: "Substep 2", DependsOn: []uint64{21}, Status: state.StepPending},
+		},
+		GlobalPlan: state.Plan{
+			Version: 1,
+			Steps: []state.PlanStep{
+				// Legacy completed step from before max-prerequisites rule with 5 dependencies:
+				{ID: 10, Title: "Legacy completed step", DependsOn: []uint64{1, 2, 3, 4, 5}, Status: state.StepCompleted},
+				{ID: 20, Title: "Step being decomposed", DependsOn: []uint64{10}, Status: state.StepRunning},
+				{ID: 30, Title: "Pending receiver", DependsOn: []uint64{20}, Status: state.StepPending},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected legacy completed step with >4 deps to be ignored by LinkSteps, got error: %v", err)
+	}
+	if len(res.Mappings) != 1 || res.Mappings[0].ReceiverID != 30 {
+		t.Fatalf("unexpected LinkSteps result: %+v", res)
+	}
+}
+
+func TestIterativeEvaluationCarriesExtrasAndFinishTaskWiresLeafDeps(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "check.txt"), []byte("AUDITOR_SECRET_VALUE"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfgv := config.Default()
+	cfgv.ModelPlanning = "fake"
+	cfgv.MaxPrerequisitesPerStep = 4
+	cfg := config.NewManager(cfgv)
+	st := state.NewStore(root, state.NewAgentState())
+	st.SetActiveTask(&state.TaskState{
+		ID:        1,
+		Goal:      "verify check.txt and synthesize",
+		MayModify: true,
+		Status:    state.TaskRunning,
+		AcceptanceCriteria: []state.AcceptanceCriterion{
+			{ID: 1, Requirement: "check.txt contains AUDITOR_SECRET_VALUE"},
+		},
+		Plan: state.Plan{
+			Version: 1,
+			Steps: []state.PlanStep{
+				{ID: 10, Title: "Root step", Status: state.StepCompleted},
+				{ID: 11, Title: "Leaf A", DependsOn: []uint64{10}, Status: state.StepCompleted},
+				{ID: 12, Title: "Leaf B", DependsOn: []uint64{10}, Status: state.StepCompleted},
+			},
+		},
+		StepResults: []state.StepResult{
+			{StepID: 10, Success: true, Summary: "Root done"},
+			{StepID: 11, Success: true, Summary: "Leaf A done"},
+			{StepID: 12, Success: true, Summary: "Leaf B done"},
+		},
+	})
+
+	fake := &scriptedLLM{json: []string{
+		`{"action":"tool_call","reason":"read check.txt","tool":{"kind":"read_file","input":{"path":"check.txt"}},"checklist":[{"criterion_id":1,"status":"unverified"}]}`,
+		`{"action":"complete","reason":"verified check.txt","checklist":[{"criterion_id":1,"status":"verified","evidence":["AUDITOR_SECRET_VALUE found"]}]}`,
+	}}
+
+	eng := New(root, st, memory.NewStore(root, 336.0, 0.03), cfg, fake, tools.New(root, nil, cfg.Get, nil), nil)
+	check, err := eng.runIterativeEvaluation(context.Background(), false)
+	if err != nil {
+		t.Fatalf("runIterativeEvaluation failed: %v", err)
+	}
+	if !check.Complete {
+		t.Fatalf("expected check.Complete=true, got %+v", check)
+	}
+	// Verify the second IterativeEvaluation prompt included the tool output from iteration 1 via Extras!
+	snap := st.Snapshot()
+	var evalLogs []state.ExecutionLogEntry
+	for _, entry := range snap.ExecutionLog {
+		if entry.Kind == state.LogLLM && entry.Primitive == "IterativeEvaluation" {
+			evalLogs = append(evalLogs, entry)
+		}
+	}
+	if len(evalLogs) != 2 {
+		t.Fatalf("expected 2 IterativeEvaluation LLM calls, got %d", len(evalLogs))
+	}
+	if !strings.Contains(evalLogs[1].Input, "AUDITOR_SECRET_VALUE") {
+		t.Fatalf("expected second IterativeEvaluation prompt to contain tool output via Extras, got:\n%s", evalLogs[1].Input)
+	}
+
+	// Verify finishTask wires Final Synthesis DependsOn to unconsumed leaf steps [11, 12] (not consumed root 10).
+	err = eng.finishTask(context.Background(), check)
+	if err == nil || err.Error() != "continue_synthesis" {
+		t.Fatalf("expected continue_synthesis error on first finishTask call, got %v", err)
+	}
+	snap = st.Snapshot()
+	steps := snap.ActiveTask.Plan.Steps
+	synth := steps[len(steps)-1]
+	if synth.Mode != state.StepSynthesize {
+		t.Fatalf("expected last step to be StepSynthesize, got %+v", synth)
+	}
+	if len(synth.DependsOn) != 2 || synth.DependsOn[0] != 11 || synth.DependsOn[1] != 12 {
+		t.Fatalf("expected Final Synthesis DependsOn=[11, 12], got %+v", synth.DependsOn)
+	}
+}
+
+type mockPrimitiveContext struct{}
+
+func (m *mockPrimitiveContext) BuildPrompt(req primitives.PromptRequest) (string, error) {
+	return req.PrimitiveInput, nil
+}
+func (m *mockPrimitiveContext) Log(kind state.LogKind, primitive, summary, input, raw string) {}
+func (m *mockPrimitiveContext) RecordInference(primitive string, isRepair bool)               {}

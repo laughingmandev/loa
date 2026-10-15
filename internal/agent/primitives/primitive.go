@@ -19,8 +19,6 @@ type PromptRequest struct {
 	Target                string
 	PinnedEvaluation      string
 	BlindTrail            []string
-	IncludeChatHistory    int
-	OmitChatHistory       bool
 	RepairReserve         int
 }
 

@@ -111,7 +111,15 @@ func (p *LinkStepsPrimitive) Execute(ctx context.Context, pc PrimitiveContext, i
 				}
 			}
 
-			if mappedDeps, ok := mappingLookup[s.ID]; ok {
+			mappedDeps, isMapped := mappingLookup[s.ID]
+			if s.Status == state.StepCompleted {
+				if isMapped {
+					return fmt.Errorf("Validation Error: Step %d is already completed and cannot be used as a receiver_id in mappings.", s.ID)
+				}
+				continue
+			}
+
+			if isMapped {
 				newDepsCount += len(mappedDeps)
 				for _, d := range mappedDeps {
 					mappedNewSteps[d] = true

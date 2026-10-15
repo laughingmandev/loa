@@ -1050,6 +1050,25 @@ read_task_step {"step_id":123}`
 	return schema
 }
 
+func AuditorToolSchema() string {
+	return `read_file {"path":"relative/path"}
+read_range {"path":"relative/path","start":1,"end":120}
+search_path {"query":"name fragment","limit":100}
+search_text {"pattern":"text or regex","regex":false,"limit":100}
+find_symbol {"query":"SymbolName","limit":30}
+list_symbols {"path":"relative/source.go"}
+read_ast_node {"path":"relative/source.go","rule":"{pattern: 'func $NAME() { $$$BODY }'}"}
+git_status {}
+git_diff {"staged":false}
+read_tool_output {"tool_call_id":123,"offset":0,"limit":16384}
+analyze_large_file {"path":"relative/path","instructions":"flat string without nested JSON objects"}
+artifact_list {}
+artifact_read {"name":"filename.md","start_line":0,"end_line":0}
+artifact_search {"query":"search text"}
+search_task_steps {}
+read_task_step {"step_id":123}`
+}
+
 func ParseInt(v any) int {
 	switch x := v.(type) {
 	case float64:

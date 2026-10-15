@@ -17,6 +17,15 @@ func tailMessages(in []state.Message, n int) []state.Message {
 	}
 	return in[len(in)-n:]
 }
+
+// formatMessageLines renders messages oldest-first, one line each: "[RFC3339] source: text".
+func formatMessageLines(msgs []state.Message) string {
+	var b strings.Builder
+	for _, m := range msgs {
+		fmt.Fprintf(&b, "[%s] %s: %s\n", m.CreatedAt.Format(time.RFC3339), m.Source, m.Text)
+	}
+	return b.String()
+}
 func tailSteps(in []state.StepResult, n int) []state.StepResult {
 	if n <= 0 || len(in) <= n {
 		return in
@@ -299,30 +308,6 @@ func buildPrompt(root string, cfg config.Config, snap state.AgentState, baseSyst
 		return "", fmt.Errorf("immutable prompt cost (%d) exceeds context budget (%d)", immutableCost, maxRunes)
 	}
 
-	// Format Chat History requested
-	historyCount := req.IncludeChatHistory
-	if historyCount == 0 && !req.OmitChatHistory {
-		historyCount = cfg.RecentMessages
-	}
-
-	var chatRunes int
-	var chatLines []string
-	if historyCount > 0 && !req.OmitChatHistory {
-		recent := tailMessages(snap.Messages, historyCount)
-		if len(recent) > 0 {
-			chatRunes += len([]rune("\nRECENT CONVERSATION:\n"))
-		}
-		for _, m := range recent {
-			text := m.Text
-			if snap.ActiveTask != nil && text == snap.ActiveTask.Goal {
-				text = "[CONTENT MOVED TO ACTIVE TASK GOAL AT TOP OF PROMPT]"
-			}
-			line := fmt.Sprintf("[%s] %s: %s", m.CreatedAt.Format(time.RFC3339), m.Source, text)
-			chatLines = append(chatLines, line)
-			chatRunes += len([]rune(line)) + 1 // +1 for newline
-		}
-	}
-
 	// Measure Extras
 	var extrasRunes int
 	for _, ext := range req.Extras {
@@ -334,7 +319,6 @@ func buildPrompt(root string, cfg config.Config, snap state.AgentState, baseSyst
 		codeCap = 32000
 	}
 
-	requestedChatRunes := float64(chatRunes)
 	requestedExtraRunes := float64(extrasRunes)
 
 	// Apply cap to extras if it exceeds CodeBudget
@@ -342,15 +326,10 @@ func buildPrompt(root string, cfg config.Config, snap state.AgentState, baseSyst
 		requestedExtraRunes = codeCap
 	}
 
-	allocatedChat := requestedChatRunes
+	// Extras may never exceed the remaining slack
 	allocatedExtra := requestedExtraRunes
-
-	if requestedChatRunes+requestedExtraRunes > slackRunes {
-		// Squash proportionally
-		totalRequested := requestedChatRunes + requestedExtraRunes
-		chatRatio := requestedChatRunes / totalRequested
-		allocatedChat = slackRunes * chatRatio
-		allocatedExtra = slackRunes - allocatedChat
+	if allocatedExtra > slackRunes {
+		allocatedExtra = slackRunes
 	}
 
 	// Assemble actual extras within allocatedExtra
@@ -371,34 +350,11 @@ func buildPrompt(root string, cfg config.Config, snap state.AgentState, baseSyst
 		currentExtraRunes += len(runes) + 1
 	}
 
-	// Assemble actual chat within allocatedChat
-	var finalChat strings.Builder
-	if len(chatLines) > 0 {
-		finalChat.WriteString("\nRECENT CONVERSATION:\n")
-		currentChatRunes := len([]rune("\nRECENT CONVERSATION:\n"))
-		var reversedKept []string
-		for i := len(chatLines) - 1; i >= 0; i-- {
-			lineRunes := len([]rune(chatLines[i]))
-			if currentChatRunes+lineRunes+1 > int(allocatedChat) {
-				break
-			}
-			reversedKept = append(reversedKept, chatLines[i])
-			currentChatRunes += lineRunes + 1
-		}
-		for i := len(reversedKept) - 1; i >= 0; i-- {
-			finalChat.WriteString(reversedKept[i])
-			finalChat.WriteByte('\n')
-		}
-	}
-
 	// Final Assembly
 	var fullPrompt strings.Builder
 	fullPrompt.WriteString(mandatory.String())
 	if finalExtras.Len() > 0 {
 		fullPrompt.WriteString(finalExtras.String())
-	}
-	if finalChat.Len() > 0 {
-		fullPrompt.WriteString(finalChat.String())
 	}
 
 	fullPrompt.WriteString("\nPRIMITIVE INSTRUCTIONS:\n")

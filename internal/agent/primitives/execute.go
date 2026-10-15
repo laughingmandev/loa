@@ -11,15 +11,17 @@ import (
 	"github.com/laughingmandev/loa/internal/tools"
 )
 
-var executePrompt = `Work on exactly the current plan step. You may request one action at a time: a tool call, semantic memory retrieval, the past-task-summary list, clarification from the user, or declare the step complete. Prefer compact symbol/range reads over huge files when practical, but use whole files when appropriate. Do not modify files unless modification is allowed. TASK MODIFICATION AUTHORIZATION in active task state is a hard boundary: may_modify=false means strictly read-only. Furthermore, if the CURRENT STEP mode is "investigate" or "verify", modifying tools are STRICTLY FORBIDDEN even if the task overall allows modification. If you discover a bug during a verify step, do NOT attempt to fix it with a tool; instead, return step_complete with a failed outcome so a repair step can be scheduled.
+var executePrompt = `Work on exactly the current plan step. You may request one action at a time: a tool call, semantic memory retrieval, the past-task-summary list, reading the chat history, clarification from the user, or declare the step complete. Prefer compact symbol/range reads over huge files when practical, but use whole files when appropriate. Do not modify files unless modification is allowed. TASK MODIFICATION AUTHORIZATION in active task state is a hard boundary: may_modify=false means strictly read-only. Furthermore, if the CURRENT STEP mode is "investigate" or "verify", modifying tools are STRICTLY FORBIDDEN even if the task overall allows modification. If you discover a bug during a verify step, do NOT attempt to fix it with a tool; instead, return step_complete with a failed outcome so a repair step can be scheduled.
 If encountering an unknown class/file, you MUST return retrieve_memory.
 Do not use raw text search or path guessing to understand architecture. You MUST follow the pipeline: Retrieve Semantic Memory -> Identify Targets -> Use find_symbol
 For retrieve_memory, you may optionally include "allowed_kinds" (e.g. ["task_summary", "fact", "structural"]) to strictly filter memory results to specific kinds.
+The chat history with the user is NOT included in your context. If the task or user guidance refers to earlier discussion (e.g. "as you suggested", "like we discussed", "the plan from before"), return read_history to read it. offset 0 is the newest message, higher offsets go further back; count is optional and capped by the system. State in reason exactly what you are looking for, because only the information relevant to that reason is returned.
 Available tool schemas are provided below.
 Return exactly one of:
-{"action":"tool","reason":"Short explanation of why you are taking this action and where you are in the overall step (acts as your memory trail)","tool":{"kind":"execute_process","input":{}}}
+{"action":"tool","reason":"Short explanation of why you are taking this action and where you are in the overall step (acts as your memory trail)","tool":{"kind":"read_file","input":{"path":"relative/path"}}}
 {"action":"retrieve_memory","reason":"short","query":"semantic search phrase","allowed_kinds":["task_summary","fact"]}
 {"action":"task_summaries","reason":"short"}
+{"action":"read_history","reason":"what you are looking for in the chat history","offset":0,"count":10}
 {"action":"ask_user","reason":"short","ask_user_question":"what cannot be determined locally"}
 {"action":"step_complete","reason":"short","completion_summary":"what was accomplished"}`
 
@@ -29,6 +31,8 @@ type ExecutionDecision struct {
 	EvaluateAfter     *bool          `json:"evaluate_after,omitempty"`
 	Query             string         `json:"query,omitempty"`
 	AllowedKinds      []string       `json:"allowed_kinds,omitempty"`
+	Offset            int            `json:"offset,omitempty"`
+	Count             int            `json:"count,omitempty"`
 	Tool              *tools.Request `json:"tool,omitempty"`
 	AskUserQuestion   string         `json:"ask_user_question,omitempty"`
 	CompletionSummary string         `json:"completion_summary,omitempty"`
@@ -138,6 +142,10 @@ func ValidateExecution(d *ExecutionDecision) error {
 			return fmt.Errorf("query required")
 		}
 	case "task_summaries":
+	case "read_history":
+		if d.Offset < 0 {
+			return fmt.Errorf("offset must be >= 0 (0 is the newest message)")
+		}
 	case "tool":
 		FillToolDescription(d.Reason, d.Tool)
 		if err := ValidateToolRequest(d.Tool); err != nil {
@@ -156,7 +164,7 @@ func ValidateExecution(d *ExecutionDecision) error {
 		if err := ToolActionRepairHint(d.Action); err != nil {
 			return err
 		}
-		return fmt.Errorf("invalid execution action %q; allowed values: retrieve_memory, task_summaries, tool, ask_user, step_complete", d.Action)
+		return fmt.Errorf("invalid execution action %q; allowed values: retrieve_memory, task_summaries, read_history, tool, ask_user, step_complete", d.Action)
 	}
 	return nil
 }

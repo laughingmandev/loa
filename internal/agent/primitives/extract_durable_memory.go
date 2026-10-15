@@ -68,7 +68,6 @@ func (p *ExtractDurableMemoryPrimitive) Execute(ctx context.Context, pc Primitiv
 		Extras:                nil,
 		IncludeInstructions:   false,
 		GlobalPlanView:        true,
-		OmitChatHistory:       true,
 	}
 	var user string
 	_ = user

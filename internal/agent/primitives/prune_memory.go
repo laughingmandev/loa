@@ -73,7 +73,6 @@ func (p *PruneMemoryPrimitive) Execute(ctx context.Context, pc PrimitiveContext,
 		PrimitiveInput:        memJSON + "\n\nCURRENT PLAN:\n" + planJSON,
 		IncludeInstructions:   true,
 		GlobalPlanView:        false, // The plan is already injected
-		OmitChatHistory:       true,
 	}
 	var user string
 	_ = user
