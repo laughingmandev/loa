@@ -61,11 +61,26 @@ func ValidateRecovery(r *RecoveryDecision) error {
 }
 
 func (p *AssessTaskRecoveryPrimitive) Execute(ctx context.Context, pc PrimitiveContext, in AssessTaskRecoveryInput) (RecoveryDecision, error) {
-	ctxText := pc.Build(nil, nil, true)
-	user := ctxText + "\nPRIMITIVE INSTRUCTIONS:\n" + AssessTaskRecoveryPrompt + "\n\nPRIMITIVE INPUT:\n" + in.Purpose
+	req := PromptRequest{
+		PrimitiveInstructions: AssessTaskRecoveryPrompt,
+		PrimitiveInput:        in.Purpose,
+		Step:                  nil,
+		Extras:                nil,
+		IncludeInstructions:   true,
+		GlobalPlanView:        true,
+	}
+	var user string
+	_ = user
 
 	var out RecoveryDecision
-	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelExecuting, p.baseSystem, user, &out, func() error {
+	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelExecuting, p.baseSystem, func(repairCost int) (string, error) {
+		req.RepairReserve = repairCost
+		prompt, promptErr := pc.BuildPrompt(req)
+		if repairCost == 0 && promptErr == nil {
+			user = prompt
+		}
+		return prompt, promptErr
+	}, &out, func() error {
 		return ValidateRecovery(&out)
 	})
 

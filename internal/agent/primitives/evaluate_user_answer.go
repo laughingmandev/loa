@@ -44,11 +44,26 @@ func ValidateAnswerEvaluation(v *AnswerEvaluation) error {
 }
 
 func (p *EvaluateUserAnswerPrimitive) Execute(ctx context.Context, pc PrimitiveContext, in EvaluateUserAnswerInput) (AnswerEvaluation, error) {
-	ctxText := pc.Build(nil, nil, false)
-	user := ctxText + "\nPRIMITIVE INSTRUCTIONS:\n" + AnswerEvalPrompt + "\n\nPRIMITIVE INPUT:\n" + in.Purpose
+	req := PromptRequest{
+		PrimitiveInstructions: AnswerEvalPrompt,
+		PrimitiveInput:        in.Purpose,
+		Step:                  nil,
+		Extras:                nil,
+		IncludeInstructions:   false,
+		GlobalPlanView:        true,
+	}
+	var user string
+	_ = user
 
 	var out AnswerEvaluation
-	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelConversation, p.baseSystem, user, &out, func() error {
+	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelConversation, p.baseSystem, func(repairCost int) (string, error) {
+		req.RepairReserve = repairCost
+		prompt, promptErr := pc.BuildPrompt(req)
+		if repairCost == 0 && promptErr == nil {
+			user = prompt
+		}
+		return prompt, promptErr
+	}, &out, func() error {
 		return ValidateAnswerEvaluation(&out)
 	})
 

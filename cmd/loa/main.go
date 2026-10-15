@@ -19,9 +19,12 @@ import (
 	"github.com/laughingmandev/loa/internal/server"
 	"github.com/laughingmandev/loa/internal/state"
 	"github.com/laughingmandev/loa/internal/tools"
+	"github.com/laughingmandev/loa/internal/version"
 )
 
 func main() {
+	fmt.Printf("Starting Loa %s...\n", version.String)
+	
 	addr := flag.String("addr", "127.0.0.1:7171", "local HTTP listen address")
 	flag.Parse()
 	if flag.NArg() > 1 {
@@ -86,10 +89,11 @@ func main() {
 	cancelIdx()
 
 	c := cfg.Get()
+	hasEmbedding := c.EmbeddingModel != "" || (c.EmbeddingEngine == "local" && c.LocalEmbeddingModelPath != "")
 	if len(st.SessionStatus().Sessions) == 0 {
 		eng.SetNeedsProjectSetup(true)
 		log.Printf("boot scan skipped: project needs setup")
-	} else if c.ModelCrawling != "" && c.EmbeddingModel != "" {
+	} else if c.ModelCrawling != "" && hasEmbedding {
 		bootCtx, cancelBoot := context.WithCancel(context.Background())
 		if err := eng.BootScan(bootCtx); err != nil {
 			log.Printf("boot scan encountered errors: %v", err)

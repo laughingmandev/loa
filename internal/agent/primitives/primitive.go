@@ -6,9 +6,25 @@ import (
 	"github.com/laughingmandev/loa/internal/state"
 )
 
+type PromptRequest struct {
+	PrimitiveInstructions string
+	PrimitiveInput        string
+	PrimitiveInputLabel   string
+	
+	Step                  *state.PlanStep
+	Extras                []string
+	IncludeInstructions   bool
+	GlobalPlanView        bool
+
+	Target                string
+	PinnedEvaluation      string
+	BlindTrail            []string
+	RepairReserve         int
+}
+
 // PrimitiveContext provides access to engine-level state, context building, and telemetry.
 type PrimitiveContext interface {
-	Build(step *state.PlanStep, extras []string, includeInstructions bool) string
+	BuildPrompt(req PromptRequest) (string, error)
 	RecordInference(primitive string, isRepair bool)
 	Log(kind state.LogKind, primitive, summary, prompt, response string)
 }

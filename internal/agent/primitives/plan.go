@@ -17,6 +17,7 @@ Acceptance criterion id values are Loa-internal identifiers assigned after requi
 Allowed mode values are exactly: investigate, modify, verify.
 Allowed expected_tools values are exactly: ` + ToolKindEnum + `.
 expected_tools contains Loa tool kinds, NOT executable/program names or shell aliases. For example use "execute_process" or "execute_shell", never "go", "bash", "shell", "mkdir", "docker", or "docker-compose". An empty expected_tools list is valid when no specific tool is known yet.
+Max Prerequisites Rule: A single step MAY NOT depend on more than %d previous steps. If you need to integrate more things, create intermediate synthesis steps.
 If the task is so ambiguous that a plan cannot be safely created without user clarification, you may use the ask_user action.
 Return {"steps":[{"title":"","goal":"","reason":"","expected_result":"","mode":"modify","depends_on":[],"expected_tools":["write_file"]}],"reason":"short"}. depends_on uses 1-based positions and may only reference earlier steps.
 OR, if clarification is strictly required: {"action":"ask_user","reason":"why","ask_user_question":"what to ask"}.`
@@ -61,12 +62,27 @@ func NewPlanPrimitive(cfg config.Config, llmClient llm.Client, baseSystem string
 }
 
 func (p *PlanPrimitive) Execute(ctx context.Context, pc PrimitiveContext, in PlanInput) (PlanResult, error) {
-	ctxText := pc.Build(nil, in.Extras, true)
-	user := ctxText + "\nPRIMITIVE INSTRUCTIONS:\n" + planPrompt + "\n\nPRIMITIVE INPUT:\n" + in.Purpose
+	req := PromptRequest{
+		PrimitiveInstructions: fmt.Sprintf(planPrompt, p.cfg.MaxPrerequisitesPerStep),
+		PrimitiveInput:        in.Purpose,
+		Step:                  nil,
+		Extras:                in.Extras,
+		IncludeInstructions:   true,
+		GlobalPlanView:        true,
+	}
+	var user string
+	_ = user
 
 	var out PlanResult
-	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelPlanning, p.baseSystem, user, &out, func() error {
-		return ValidatePlanForTask(&out, in.MayModify)
+	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelPlanning, p.baseSystem, func(repairCost int) (string, error) {
+		req.RepairReserve = repairCost
+		prompt, promptErr := pc.BuildPrompt(req)
+		if repairCost == 0 && promptErr == nil {
+			user = prompt
+		}
+		return prompt, promptErr
+	}, &out, func() error {
+		return ValidatePlanForTask(&out, in.MayModify, p.cfg.MaxPrerequisitesPerStep)
 	})
 
 	for i := range attempts {
@@ -88,11 +104,17 @@ func (p *PlanPrimitive) Execute(ctx context.Context, pc PrimitiveContext, in Pla
 	return out, err
 }
 
-func ValidatePlanForTask(p *PlanResult, mayModify bool) error {
+func ValidatePlanForTask(p *PlanResult, mayModify bool, maxPrerequisites int) error {
 	if err := ValidatePlan(p); err != nil {
 		return err
 	}
 	if mayModify {
+		// Even if they can modify, check max prerequisites limit
+		for i, step := range p.Steps {
+			if len(step.DependsOn) > maxPrerequisites {
+				return fmt.Errorf("Validation Error: Step %d has %d dependencies, but the maximum allowed is %d. You must decompose this node and create intermediate synthesis steps.", i+1, len(step.DependsOn), maxPrerequisites)
+			}
+		}
 		return nil
 	}
 	for i, step := range p.Steps {

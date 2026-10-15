@@ -36,6 +36,9 @@ Loa's current client expects `/v1/models` and `/v1/chat/completions` from the co
 - **Blind Action Threshold**: in Dynamic mode, the count at which the engine invokes `AssessBlindExecution` as a soft decision point. It is not a continuously running supervisor.
 - **Max Execution Loops**: bounds internal execution loops, including per-step execution/recovery paths. It is not one global counter for all operations across a full task.
 - **Max Plan Depth**: used as a bound across several plan/replan/decomposition/final-audit paths; it is broader than only visual DAG depth.
+- **Max Prerequisites Per Step**: configures the maximum number of direct dependencies evaluated and injected as prerequisites per plan step.
+
+*(Note on `Force JSON Mode`: The `force_json_mode` setting exists to bypass Ollama's fragile `json_object` parser on affected models. It defaults to `true`. If you experience 0-length silent crashes on Qwen models, you can disable it to handle JSON strictly through Loa's application layer. It is intentionally excluded from the UI to prevent accidental LLM crashes for users who need it enabled. It can only be changed by manually editing the global config file.)*
 
 ### Timeouts
 
@@ -100,7 +103,7 @@ For non-OpenAI-host URLs, the current client also sends this value to the chat e
 
 ### Recent Messages
 
-`recent_messages` is the maximum tail of chat messages considered by the context builder. The newest messages are added first while space remains.
+`recent_messages` (default 10) is the maximum, and the default, number of chat messages a single `read_history` call returns. Chat history is not injected into prompts; agents read it on demand.
 
 ### Recent Task Breadcrumbs
 
@@ -108,13 +111,9 @@ For non-OpenAI-host URLs, the current client also sends this value to the chat e
 
 Direct DAG prerequisites are separate: completed results from the current step's direct `depends_on` dependencies are injected as direct prerequisite context.
 
-### Context Minimum Buffer
+### Context Margin Percentages
 
-The builder reserves 5% of `context_budget`, with `context_minimum_buffer` as the configured minimum safety buffer.
-
-### Context Safe Budget Floor
-
-`context_minimum_safe_budget` is used as a floor for the safe-budget calculation after the safety buffer is subtracted.
+The builder reserves safety buffers to ensure prompt generation stays within limits. `context_network_margin_percent` (labeled **Context Allocation Margin %** in the Web UI, default 2%) is applied to avoid absolute hardware/backend boundaries. `context_prompt_margin_percent` (labeled **Context Prompt Margin %**, default 15%) is applied on top of that to absorb heuristic variance during local token counting.
 
 ### Code Budget Max Floor
 

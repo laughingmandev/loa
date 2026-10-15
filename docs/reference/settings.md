@@ -33,10 +33,10 @@ The current model client uses `/v1/models`, `/v1/chat/completions`, and `/v1/emb
 | `context_budget` | `100000` | Per-inference context budget used by the context builder. For non-OpenAI-host URLs it is also sent as `options.num_ctx`. |
 | `output_reserve` | `4000` | Reserved output allowance; sent as chat `max_tokens`. |
 | `code_budget` | `8000` | Rune/token allowance limiting extra retrieved/tool context injected by the builder. |
-| `recent_messages` | `12` | Maximum recent conversation messages considered for prompt composition. |
+| `recent_messages` | `10` | Maximum (and default) number of chat messages one `read_history` call returns. Chat history is not injected into prompts; agents pull it via `read_history`. |
 | `context_recent_breadcrumbs` | `5` | Number of recent completed-step summaries injected as breadcrumbs. |
-| `context_minimum_buffer` | `2000` | Minimum prompt safety buffer; builder otherwise starts from 5% of `context_budget`. |
-| `context_minimum_safe_budget` | `4000` | Floor applied to the builder's computed safe budget. |
+| `context_prompt_margin_percent` | `15` | Percentage of budget shaved off to account for local token-counting heuristics. |
+| `context_network_margin_percent` | `2` | Percentage of budget shaved off to avoid hardware/backend context boundaries. |
 | `context_code_budget_max_floor` | `8000` | Current lower floor on the builder's computed `maxRunes` prompt allowance after output reserve is subtracted. |
 | `project_instructions` | empty | Added to mandatory task context when non-empty. |
 
@@ -64,8 +64,13 @@ These decay settings affect search scoring. They do not define a memory-deletion
 | `json_repair_attempts` | `7` | Maximum model repair attempts for malformed/invalid structured output. |
 | `max_plan_depth` | `25` | Bound reused across plan/replan attempts, decomposition depth, and final iterative verification. |
 | `max_execution_loops` | `80` | Bound used by internal execution loops, including per-step execution/recovery and negotiation loops. |
+| `plan_research_max_loops` | `6` | Maximum actions in the pre-planning research loop (memories, task summaries, attached files, chat history). When reached, planning proceeds with what was collected. Config file only; not in the settings UI yet. |
 | `blind_action_threshold` | `8` | Dynamic-mode threshold that triggers `AssessBlindExecution`. |
 | `evaluation_mode` | `Dynamic` | `Dynamic` or `Immediate` (the UI labels `Immediate` as Strict). |
+| `max_prerequisites_per_step` | `4` | Maximum number of prerequisites (direct dependencies) evaluated and injected per step. |
+| `force_json_mode` | `true` | Enforces strict API-level JSON output. See note below. |
+
+**Note on `force_json_mode`**: This setting is intentionally absent from the current Web UI and must be changed via manual config edit if needed. When `true` (default), Loa sends the `"response_format": {"type": "json_object"}` payload to the LLM backend to enforce strict JSON grammar. If you experience a known Ollama bug where evaluating very large prompts on certain models (like Qwen) causes a 0-length silent crash, you can set this to `false` to bypass the fragile parser and handle JSON extraction entirely through Loa's robust application-layer logic.
 
 `max_execution_loops` should not be interpreted as one global counter across the complete lifetime of a task.
 

@@ -54,11 +54,26 @@ func ValidateCritique(v *CritiqueResult) error {
 }
 
 func (p *CritiqueApproachPrimitive) Execute(ctx context.Context, pc PrimitiveContext, in CritiqueApproachInput) (CritiqueResult, error) {
-	ctxText := pc.Build(in.Step, in.Extras, true)
-	user := ctxText + "\nPRIMITIVE INSTRUCTIONS:\n" + CritiquePrompt + "\n\nPRIMITIVE INPUT:\n" + in.Purpose
+	req := PromptRequest{
+		PrimitiveInstructions: CritiquePrompt,
+		PrimitiveInput:        in.Purpose,
+		Step:                  in.Step,
+		Extras:                in.Extras,
+		IncludeInstructions:   true,
+		GlobalPlanView:        true,
+	}
+	var user string
+	_ = user
 
 	var out CritiqueResult
-	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelExecuting, p.baseSystem, user, &out, func() error {
+	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelExecuting, p.baseSystem, func(repairCost int) (string, error) {
+		req.RepairReserve = repairCost
+		prompt, promptErr := pc.BuildPrompt(req)
+		if repairCost == 0 && promptErr == nil {
+			user = prompt
+		}
+		return prompt, promptErr
+	}, &out, func() error {
 		return ValidateCritique(&out)
 	})
 

@@ -150,6 +150,7 @@ type TaskState struct {
 	ID                 uint64                `json:"id"`
 	Title              string                `json:"title,omitempty"`
 	Goal               string                `json:"goal"`
+	Target             string                `json:"target,omitempty"`
 	MayModify          bool                  `json:"may_modify"`
 	ComplexityMode     string                `json:"complexity_mode"`
 	Status             TaskStatus            `json:"status"`

@@ -21,6 +21,8 @@ This reference describes primitives that are actively invoked by the current `ma
 - **`EvaluatePlan`**: critiques/validates a generated plan before it is accepted.
 - **`EvaluateStep`**: decides whether a Planned step is narrow/executable enough or requires decomposition.
 - **`DecomposeStep`**: replaces a step with smaller steps when `EvaluateStep` rejects it as too broad.
+- **`LinkSteps`**: intelligently rewires plan dependencies when a step is decomposed, rather than naively mapping downstream dependencies to the last decomposed sub-step.
+- **`SynthesizeTarget`**: explicitly synthesizes and tags the operational target (e.g., target components or entities) to focus the agent during plan generation.
 
 Plan/replan/decomposition loops are bounded using `max_plan_depth` in the current engine.
 
@@ -40,6 +42,7 @@ Plan/replan/decomposition loops are bounded using `max_plan_depth` in the curren
 - **`GenerateStepArtifact`**: produces the step artifact written under the current task's artifact directory.
 - **`ExtractStepResult`**: converts the completed step/extras into a structured result containing summary/facts/decisions used by later state/context.
 - **`RefreshTaskContext`**: rebuilds the active structured task context after a normal Planned step completes. It receives the previous task context, new `StepResult`, and acceptance criteria.
+- **`PruneMemory`**: allows the agent to explicitly discard stale or obsolete memory artifacts from the active task context to keep it clean.
 
 If `RefreshTaskContext` fails, the engine falls back to appending the extracted facts/decisions deterministically.
 

@@ -41,14 +41,29 @@ func NewFormulateHypothesisPrimitive(cfg config.Config, llmClient llm.Client, ba
 
 func (p *FormulateHypothesisPrimitive) Execute(ctx context.Context, pc PrimitiveContext, in FormulateHypothesisInput) (HypothesisResult, error) {
 	var h HypothesisResult
-	ctxText := pc.Build(in.Step, in.Extras, true)
-	user := ctxText + "\nPRIMITIVE INSTRUCTIONS:\n" + hypothesisPrompt + "\n\nPRIMITIVE INPUT:\n" + in.Purpose
+	req := PromptRequest{
+		PrimitiveInstructions: hypothesisPrompt,
+		PrimitiveInput:        in.Purpose,
+		Step:                  in.Step,
+		Extras:                in.Extras,
+		IncludeInstructions:   true,
+		GlobalPlanView:        true,
+	}
+	var user string
+	_ = user
 
 	attempts, err := p.llm.ChatJSON(
 		ctx,
 		p.cfg.ModelExecuting,
 		p.baseSystem,
-		user,
+		func(repairCost int) (string, error) {
+		req.RepairReserve = repairCost
+		prompt, promptErr := pc.BuildPrompt(req)
+		if repairCost == 0 && promptErr == nil {
+			user = prompt
+		}
+		return prompt, promptErr
+	},
 		&h,
 		func() error { return validateHypothesis(&h) },
 	)

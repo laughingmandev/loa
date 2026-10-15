@@ -249,7 +249,6 @@ button:disabled,select:disabled{opacity:.42;cursor:not-allowed;box-shadow:none!i
 .slice{position:absolute;height:100%;top:0}
 .slice-output{background:var(--warn);border-radius:6px 0 0 6px}
 .slice-code{background:var(--cyan2)}
-.slice-chat{background:#1b5069;border-radius:0 6px 6px 0}
 .thumb{position:absolute;top:-4px;width:12px;height:20px;background:var(--text);border-radius:3px;cursor:ew-resize;transform:translateX(-6px);z-index:2;box-shadow:var(--glow)}
 .budget-values{display:flex;justify-content:space-between;font-size:10px;color:var(--text);font-family:monospace}
 

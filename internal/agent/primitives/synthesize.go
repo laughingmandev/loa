@@ -44,16 +44,27 @@ func NewSynthesizeTaskPrimitive(cfg config.Config, llmClient llm.Client, baseSys
 }
 
 func (p *SynthesizeTaskPrimitive) Execute(ctx context.Context, pc PrimitiveContext, in SynthesizeTaskInput) (SynthesizeTaskResult, error) {
-	ctxText := pc.Build(nil, in.Extras, true)
-	
-	if in.PinnedEvaluation != "" {
-		ctxText += "\n=== PINNED EVALUATION (Your current goal) ===\n" + in.PinnedEvaluation + "\n=============================================\n"
+	req := PromptRequest{
+		PrimitiveInstructions: synthesizePrompt,
+		PrimitiveInputLabel:   "\nORIGINAL GOAL:\n",
+		PrimitiveInput:        in.Goal,
+		Extras:                in.Extras,
+		IncludeInstructions:   true,
+		GlobalPlanView:        true,
+		PinnedEvaluation:      in.PinnedEvaluation,
 	}
-
-	user := ctxText + "\nPRIMITIVE INSTRUCTIONS:\n" + synthesizePrompt + "\n\nORIGINAL GOAL:\n" + in.Goal
+	var user string
+	_ = user
 
 	var out SynthesizeTaskResult
-	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelConversation, p.baseSystem, user, &out, func() error {
+	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelConversation, p.baseSystem, func(repairCost int) (string, error) {
+		req.RepairReserve = repairCost
+		prompt, promptErr := pc.BuildPrompt(req)
+		if repairCost == 0 && promptErr == nil {
+			user = prompt
+		}
+		return prompt, promptErr
+	}, &out, func() error {
 		if out.Response == "" {
 			return fmt.Errorf("response is required")
 		}

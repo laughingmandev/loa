@@ -34,14 +34,18 @@ type Config struct {
 	EmbeddingModel        string           `json:"embedding_model"`
 	LocalEmbeddingModelPath string         `json:"local_embedding_model_path"`
 	ContextBudget         int              `json:"context_budget"`
+	ContextPromptMarginPercent  int        `json:"context_prompt_margin_percent"`
+	ContextNetworkMarginPercent int        `json:"context_network_margin_percent"`
 	OutputReserve         int              `json:"output_reserve"`
 	CodeBudget            int              `json:"code_budget"`
 	RecentMessages        int              `json:"recent_messages"`
 	MemoryTopK            int              `json:"memory_top_k"`
 	MemoryCandidatePool   int              `json:"memory_candidate_pool"`
 	JSONRepairAttempts    int              `json:"json_repair_attempts"`
+	ForceJSONMode         bool             `json:"force_json_mode"`
 	MaxPlanDepth          int              `json:"max_plan_depth"`
 	MaxExecutionLoops     int              `json:"max_execution_loops"`
+	PlanResearchMaxLoops  int              `json:"plan_research_max_loops"`
 	ModelTimeoutSeconds   int              `json:"model_timeout_seconds"`
 	CommandTimeoutSeconds          int              `json:"command_timeout_seconds"`
 	MemoryLTSDecayHalfLifeHours    float64          `json:"memory_lts_decay_half_life_hours"`
@@ -49,8 +53,6 @@ type Config struct {
 	MemorySessionDecayHalfLifeHours float64         `json:"memory_session_decay_half_life_hours"`
 	MemorySessionMaxWeight         float64          `json:"memory_session_max_weight"`
 	ContextRecentBreadcrumbs       int              `json:"context_recent_breadcrumbs"`
-	ContextMinimumBuffer           int              `json:"context_minimum_buffer"`
-	ContextMinimumSafeBudget       int              `json:"context_minimum_safe_budget"`
 	ContextCodeBudgetMaxFloor      int              `json:"context_code_budget_max_floor"`
 	CrawlerSmallFileThreshold      int              `json:"crawler_small_file_threshold"`
 	CrawlerMaxChunkLines           int              `json:"crawler_max_chunk_lines"`
@@ -65,6 +67,7 @@ type Config struct {
 	Permissions                    PermissionConfig `json:"permissions"`
 	BlindActionThreshold           int              `json:"blind_action_threshold"`
 	EvaluationMode                 string           `json:"evaluation_mode"`
+	MaxPrerequisitesPerStep        int              `json:"max_prerequisites_per_step"`
 }
 
 func Default() Config {
@@ -73,17 +76,21 @@ func Default() Config {
 
 	return Config{
 		OllamaURL:             "http://127.0.0.1:11434",
+		ForceJSONMode:         true,
 		EmbeddingEngine:       "local",
 		LocalEmbeddingModelPath: defaultLocalEmbed,
 		ContextBudget:         100000,
+		ContextPromptMarginPercent:  15,
+		ContextNetworkMarginPercent: 2,
 		OutputReserve:         4000,
 		CodeBudget:            8000,
-		RecentMessages:        12,
+		RecentMessages:        10,
 		MemoryTopK:            8,
 		MemoryCandidatePool:   30,
 		JSONRepairAttempts:    7,
 		MaxPlanDepth:          25,
 		MaxExecutionLoops:     80,
+		PlanResearchMaxLoops:  6,
 		ModelTimeoutSeconds:   600,
 		CommandTimeoutSeconds:          120,
 		MemoryLTSDecayHalfLifeHours:    336.0,
@@ -91,8 +98,6 @@ func Default() Config {
 		MemorySessionDecayHalfLifeHours: 2.0,
 		MemorySessionMaxWeight:         0.20,
 		ContextRecentBreadcrumbs:       5,
-		ContextMinimumBuffer:           2000,
-		ContextMinimumSafeBudget:       4000,
 		ContextCodeBudgetMaxFloor:      8000,
 		CrawlerSmallFileThreshold:      200,
 		CrawlerMaxChunkLines:           150,
@@ -105,6 +110,7 @@ func Default() Config {
 		ServerReadHeaderTimeoutSeconds: 10,
 		BlindActionThreshold:           8,
 		EvaluationMode:                 "Dynamic",
+		MaxPrerequisitesPerStep:        4,
 		Permissions: PermissionConfig{
 			Mode: PermissionSelected,
 			AskFor: map[state.ToolKind]bool{
@@ -217,6 +223,12 @@ func (c *Config) normalize() {
 	if c.ContextBudget <= 0 {
 		c.ContextBudget = 100000
 	}
+	if c.ContextPromptMarginPercent <= 0 {
+		c.ContextPromptMarginPercent = 15
+	}
+	if c.ContextNetworkMarginPercent <= 0 {
+		c.ContextNetworkMarginPercent = 2
+	}
 	if c.OutputReserve <= 0 {
 		c.OutputReserve = 4000
 	}
@@ -224,7 +236,7 @@ func (c *Config) normalize() {
 		c.CodeBudget = 8000
 	}
 	if c.RecentMessages <= 0 {
-		c.RecentMessages = 12
+		c.RecentMessages = 10
 	}
 	if c.MemoryTopK <= 0 {
 		c.MemoryTopK = 8
@@ -237,6 +249,9 @@ func (c *Config) normalize() {
 	}
 	if c.MaxPlanDepth <= 0 {
 		c.MaxPlanDepth = 25
+	}
+	if c.PlanResearchMaxLoops <= 0 {
+		c.PlanResearchMaxLoops = 6
 	}
 	if c.ModelTimeoutSeconds <= 0 {
 		c.ModelTimeoutSeconds = 600
@@ -265,12 +280,6 @@ func (c *Config) normalize() {
 	if c.ContextRecentBreadcrumbs <= 0 {
 		c.ContextRecentBreadcrumbs = 5
 	}
-	if c.ContextMinimumBuffer <= 0 {
-		c.ContextMinimumBuffer = 2000
-	}
-	if c.ContextMinimumSafeBudget <= 0 {
-		c.ContextMinimumSafeBudget = 4000
-	}
 	if c.ContextCodeBudgetMaxFloor <= 0 {
 		c.ContextCodeBudgetMaxFloor = 8000
 	}
@@ -298,4 +307,20 @@ func (c *Config) normalize() {
 	if c.ServerReadHeaderTimeoutSeconds <= 0 {
 		c.ServerReadHeaderTimeoutSeconds = 10
 	}
+}
+
+// NetworkContextBudget shaves a configurable percentage margin off the ContextBudget
+// to avoid absolute hardware/backend boundary bugs.
+func (c *Config) NetworkContextBudget() int {
+	return c.ContextBudget - (c.ContextBudget * c.ContextNetworkMarginPercent / 100)
+}
+
+// PromptContextBudget applies the heuristic variance margin on top of the network budget
+// to ensure the local Go prompt builder never exactly hits the backend limit.
+func (c *Config) PromptContextBudget() int {
+	net := c.NetworkContextBudget()
+	if c.ContextPromptMarginPercent <= 0 {
+		return net - (net * 15 / 100) // Fallback safety
+	}
+	return net - (net * c.ContextPromptMarginPercent / 100)
 }

@@ -28,7 +28,7 @@ type Attempt struct {
 
 type Client interface {
 	Models(context.Context) ([]string, error)
-	ChatJSON(context.Context, string, string, string, any, func() error) ([]Attempt, error)
+	ChatJSON(ctx context.Context, model string, system string, buildPrompt func(repairCost int) (string, error), out any, validate func() error) ([]Attempt, error)
 	ChatText(context.Context, string, string, string) (string, error)
 	Embed(context.Context, string) ([]float32, error)
 	Stats() state.RuntimeStats
@@ -72,29 +72,45 @@ func (c *OpenAICompatible) ChatText(ctx context.Context, model, system, user str
 	return c.chat(ctx, model, system, user, false)
 }
 
-func (c *OpenAICompatible) ChatJSON(ctx context.Context, model, system, user string, out any, validate func() error) ([]Attempt, error) {
-	cfg := c.Config()
-	max := cfg.JSONRepairAttempts
-	if max < 1 {
+func (c *OpenAICompatible) ChatJSON(ctx context.Context, model string, system string, buildPrompt func(repairCost int) (string, error), out any, validate func() error) ([]Attempt, error) {
+	max := c.Config().JSONRepairAttempts
+	if max <= 0 {
 		max = 1
 	}
 	attempts := make([]Attempt, 0, max)
-	prompt := user
 	kind := "original"
+
+	user, err := buildPrompt(0)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build initial prompt: %w", err)
+	}
+	prompt := user
+
 	for i := 0; i < max; i++ {
-		raw, err := c.chat(ctx, model, system, prompt, true)
+		// NOTE: Ollama's json_object parser silently crashes (returns 0-length strings)
+		// on large prompts with Qwen models. Default is disabled via ForceJSONMode.
+		raw, err := c.chat(ctx, model, system, prompt, c.Config().ForceJSONMode)
 		att := Attempt{PromptKind: kind, Prompt: prompt, Raw: raw}
 		if err != nil {
 			att.Error = err.Error()
 			attempts = append(attempts, att)
 			if strings.Contains(err.Error(), "model output was truncated") {
-				prompt = repairPrompt(user, raw, att.Error)
+				prompt, err = repairPrompt(user, raw, att.Error, buildPrompt)
+				if err != nil {
+					return attempts, fmt.Errorf("failed to build repair prompt: %w", err)
+				}
 				kind = "repair"
 				continue
 			}
 			return attempts, err
 		}
 		zeroOutput(out)
+
+		// DEBUG PRINT START
+		// trimLen := len(strings.TrimSpace(raw))
+		// fmt.Printf("[DEBUG] ChatJSON decoding raw: len=%d, trimLen=%d, content=%s\n", len(raw), trimLen, raw)
+		// DEBUG PRINT END
+
 		if err := decodeStrict(raw, out); err == nil {
 			if validate == nil {
 				attempts = append(attempts, att)
@@ -110,7 +126,11 @@ func (c *OpenAICompatible) ChatJSON(ctx context.Context, model, system, user str
 			att.Error = err.Error()
 		}
 		attempts = append(attempts, att)
-		prompt = repairPrompt(user, raw, att.Error)
+
+		prompt, err = repairPrompt(user, raw, att.Error, buildPrompt)
+		if err != nil {
+			return attempts, fmt.Errorf("failed to build repair prompt: %w", err)
+		}
 		kind = "repair"
 	}
 	return attempts, fmt.Errorf("structured response invalid after %d attempts", max)
@@ -143,16 +163,29 @@ func decodeStrict(raw string, out any) error {
 	return nil
 }
 
-func repairPrompt(original, raw, parseErr string) string {
-	return fmt.Sprintf(`Your previous response did not match the required JSON structure or validation rules.
-Repair only what is needed to satisfy the original request and validation error. Return ONLY one JSON object, no markdown.
+func repairPrompt(originalUser, raw, parseErr string, buildPrompt func(int) (string, error)) (string, error) {
+	if len(parseErr) > 2000 {
+		parseErr = parseErr[:1950] + "\n... [TRUNCATED DUE TO ERROR SIZE]"
+	}
 
-IMPORTANT REPAIR RULES:
-- For enum/constrained fields, use ONLY the exact allowed values stated in the ORIGINAL REQUEST or VALIDATION ERROR.
-- Do not invent synonyms, executable names, command names, aliases, or alternative enum labels.
-- Preserve valid content from the previous response unless it must change to satisfy validation.
-- If the VALIDATION ERROR gives a concrete structural correction (for example action="tool" with a specific tool.kind), follow that correction literally while preserving the original semantic intent and tool input.
-- If a field is optional and no valid value is appropriate, omit it or use the explicitly allowed empty value rather than inventing one.
+	repairText := "Your previous response did not match the required JSON structure or validation rules.\n" +
+		"Repair only what is needed to satisfy the original request and validation error. Return ONLY one JSON object, no markdown.\n\n" +
+		"IMPORTANT REPAIR RULES:\n" +
+		"- For enum/constrained fields, use ONLY the exact allowed values stated in the ORIGINAL REQUEST or VALIDATION ERROR.\n" +
+		"- Do not invent synonyms, executable names, command names, aliases, or alternative enum labels.\n" +
+		"- Preserve valid content from the previous response unless it must change to satisfy validation.\n" +
+		"- If the VALIDATION ERROR gives a concrete structural correction (for example action=\"tool\" with a specific tool.kind), follow that correction literally while preserving the original semantic intent and tool input.\n" +
+		"- If a field is optional and no valid value is appropriate, omit it or use the explicitly allowed empty value rather than inventing one.\n\n"
+
+	overheadText := fmt.Sprintf("%s\nORIGINAL REQUEST:\n<OMITTED>\nPREVIOUS RESPONSE:\n%s\nVALIDATION ERROR:\n%s", repairText, raw, parseErr)
+	repairCost := len(overheadText) / 4
+
+	freshUser, err := buildPrompt(repairCost)
+	if err != nil {
+		return "", err
+	}
+
+	return fmt.Sprintf(`%s
 
 ORIGINAL REQUEST:
 %s
@@ -161,7 +194,7 @@ PREVIOUS RESPONSE:
 %s
 
 VALIDATION ERROR:
-%s`, original, raw, parseErr)
+%s`, repairText, freshUser, raw, parseErr), nil
 }
 
 func (c *OpenAICompatible) chat(ctx context.Context, model, system, user string, jsonMode bool) (string, error) {
@@ -179,9 +212,12 @@ func (c *OpenAICompatible) chat(ctx context.Context, model, system, user string,
 	if jsonMode {
 		body["response_format"] = map[string]string{"type": "json_object"}
 	}
-	if !strings.Contains(cfg.OllamaURL, "api.openai.com") && cfg.ContextBudget > 0 {
-		body["options"] = map[string]any{
-			"num_ctx": cfg.ContextBudget,
+	if !strings.Contains(cfg.OllamaURL, "api.openai.com") {
+		if cfg.ContextBudget > 0 {
+			body["num_ctx"] = cfg.NetworkContextBudget()
+		}
+		if cfg.OutputReserve > 0 {
+			body["num_predict"] = cfg.OutputReserve
 		}
 	}
 	var resp struct {
@@ -193,6 +229,12 @@ func (c *OpenAICompatible) chat(ctx context.Context, model, system, user string,
 		} `json:"choices"`
 	}
 	c.inf.Add(1)
+
+	// DEBUG PRINT START
+	//bodyBytes, _ := json.Marshal(body)
+	// fmt.Printf("[DEBUG] Sending LLM Request: System+User Length=%d, JSON Payload Size=%d bytes\n", len(system)+len(user), len(bodyBytes))
+	// DEBUG PRINT END
+
 	if err := c.do(ctx, http.MethodPost, endpoint(cfg.OllamaURL, "/v1/chat/completions"), body, &resp, time.Duration(cfg.ModelTimeoutSeconds)*time.Second); err != nil {
 		return "", err
 	}
@@ -202,7 +244,11 @@ func (c *OpenAICompatible) chat(ctx context.Context, model, system, user string,
 	if resp.Choices[0].FinishReason == "length" {
 		return "", errors.New("model output was truncated (hit max_tokens or context limit)")
 	}
-	return resp.Choices[0].Message.Content, nil
+	content := resp.Choices[0].Message.Content
+	if len(strings.TrimSpace(content)) == 0 {
+		return "", errors.New("model returned a 0-length response (Ollama KV cache corruption or silent crash)")
+	}
+	return content, nil
 }
 
 func (c *OpenAICompatible) Embed(ctx context.Context, input string) ([]float32, error) {

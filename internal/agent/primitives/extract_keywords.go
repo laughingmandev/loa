@@ -35,14 +35,29 @@ func NewExtractKeywordsPrimitive(cfg config.Config, llmClient llm.Client, baseSy
 
 func (p *ExtractKeywordsPrimitive) Execute(ctx context.Context, pc PrimitiveContext, in ExtractKeywordsInput) (KeywordExtraction, error) {
 	var ext KeywordExtraction
-	ctxText := pc.Build(nil, nil, true)
-	user := ctxText + "\nPRIMITIVE INSTRUCTIONS:\n" + extractKeywordsPrompt + "\n\nPRIMITIVE INPUT:\n" + in.Text
+	req := PromptRequest{
+		PrimitiveInstructions: extractKeywordsPrompt,
+		PrimitiveInput:        in.Text,
+		Step:                  nil,
+		Extras:                nil,
+		IncludeInstructions:   true,
+		GlobalPlanView:        true,
+	}
+	var user string
+	_ = user
 
 	attempts, err := p.llm.ChatJSON(
 		ctx,
 		p.cfg.ModelCrawling,
 		p.baseSystem,
-		user,
+		func(repairCost int) (string, error) {
+		req.RepairReserve = repairCost
+		prompt, promptErr := pc.BuildPrompt(req)
+		if repairCost == 0 && promptErr == nil {
+			user = prompt
+		}
+		return prompt, promptErr
+	},
 		&ext,
 		nil, // no specific validation logic needed
 	)

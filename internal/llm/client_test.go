@@ -31,7 +31,7 @@ func TestJSONAutoRepair(t *testing.T) {
 	var out struct {
 		Answer string `json:"answer"`
 	}
-	attempts, err := c.ChatJSON(context.Background(), "test", "sys", "do it", &out, nil)
+	attempts, err := c.ChatJSON(context.Background(), "test", "sys", func(repairCost int) (string, error) { return "do it", nil }, &out, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func TestJSONRepairZerosPartialStructBetweenAttempts(t *testing.T) {
 		A string `json:"a"`
 		B string `json:"b"`
 	}
-	attempts, err := c.ChatJSON(context.Background(), "test", "sys", "do it", &out, func() error {
+	attempts, err := c.ChatJSON(context.Background(), "test", "sys", func(repairCost int) (string, error) { return "do it", nil }, &out, func() error {
 		if out.A != "fresh" || out.B != "present" {
 			return fmt.Errorf("required fields not satisfied: a=%q b=%q", out.A, out.B)
 		}

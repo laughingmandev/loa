@@ -52,11 +52,26 @@ func ValidateRoute(r *RouteResult) error {
 }
 
 func (p *RouteNextPrimitive) Execute(ctx context.Context, pc PrimitiveContext, in RouteNextInput) (RouteResult, error) {
-	ctxText := pc.Build(nil, in.Extras, true)
-	user := ctxText + "\nPRIMITIVE INSTRUCTIONS:\n" + RouteNextPrompt + "\n\nPRIMITIVE INPUT:\n" + in.Purpose + "\n\nCURRENT STEP:\n" + in.StepJSON
-
+	req := PromptRequest{
+		PrimitiveInstructions: RouteNextPrompt,
+		PrimitiveInput:        in.Purpose,
+		Step:                  nil,
+		Extras:                in.Extras,
+		IncludeInstructions:   true,
+		GlobalPlanView:        true,
+	}
+	req.PrimitiveInput += "\n\nCURRENT STEP:\n" + in.StepJSON
+	var user string
+	_ = user
 	var out RouteResult
-	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelExecuting, p.baseSystem, user, &out, func() error {
+	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelExecuting, p.baseSystem, func(repairCost int) (string, error) {
+		req.RepairReserve = repairCost
+		prompt, promptErr := pc.BuildPrompt(req)
+		if repairCost == 0 && promptErr == nil {
+			user = prompt
+		}
+		return prompt, promptErr
+	}, &out, func() error {
 		return ValidateRoute(&out)
 	})
 

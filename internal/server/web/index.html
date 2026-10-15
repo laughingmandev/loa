@@ -296,6 +296,7 @@
           <label title="How many blind actions to allow before the soft nudge primitive triggers">Blind Action Threshold<input id="blindActionThreshold" type="number" min="1"></label>
           <label>Max execution loops<input id="maxExecutionLoops" type="number" min="1"></label>
           <label>Max plan depth<input id="maxPlanDepth" type="number" min="1"></label>
+          <label>Max prerequisites per step<input id="maxPrerequisitesPerStep" type="number" min="1"></label>
           <label title="Model timeout in seconds">Model timeout (sec)<input id="modelTimeout" type="number" min="1"></label>
           <label title="Command timeout in seconds">Command timeout (sec)<input id="commandTimeout" type="number" min="1"></label>
           <label title="How long to wait when checking if the inference server is reachable">LLM Polling Timeout (sec)<input id="llmPollingTimeout" type="number" min="1"></label>
@@ -329,7 +330,7 @@
       <div id="contextTab" class="tabbody settings-tabbody">
         <div class="settings-grid">
           <label>Total Context Budget<input id="contextBudget" type="number" min="4096"></label>
-          <label>Recent messages<input id="recentMessages" type="number" min="1"></label>
+          <label title="Maximum (and default) number of chat messages the agent receives per read_history call. Chat history is not injected into prompts; the agent reads it on demand.">Max messages per history read<input id="recentMessages" type="number" min="1"></label>
           <label title="The exact number of previous task steps and results injected into the active prompt">Recent Task Breadcrumbs<input id="contextRecentBreadcrumbs" type="number" min="0"></label>
         </div>
         
@@ -337,26 +338,22 @@
           <div class="budget-labels">
             <span>Output Reserve</span>
             <span>Code Budget</span>
-            <span>Chat History</span>
           </div>
           <div class="multi-slider" id="budgetSlider">
             <div class="slice slice-output" id="sliceOutput"></div>
             <div class="slice slice-code" id="sliceCode"></div>
-            <div class="slice slice-chat" id="sliceChat"></div>
             <div class="thumb" id="thumb1"></div>
-            <div class="thumb" id="thumb2"></div>
           </div>
           <div class="budget-values">
             <span id="valOutput"></span>
             <span id="valCode"></span>
-            <span id="valChat"></span>
           </div>
         </div>
 
         <div class="settings-grid" style="margin-top: 15px;">
           <label title="Maximum bytes of a tool output (like a shell command) allowed into the context window before spilling into an artifact.">Max Prompt Tool Output Bytes<input id="maxPromptToolOutputBytes" type="number" min="1000"></label>
-          <label title="Hard floor for token buffering safety limit">Context Minimum Buffer<input id="contextMinBuffer" type="number" min="1"></label>
-          <label title="Absolute minimum allowed context budget regardless of dynamic math">Context Safe Budget Floor<input id="contextSafeBudget" type="number" min="1"></label>
+          <label title="Safety margin (%) subtracted from the Total Budget to avoid backend hardware/Ollama crashes.">Context Allocation Margin %<input id="contextNetworkMarginPercent" type="number" min="0" max="100"></label>
+          <label title="Safety margin (%) subtracted from the Allocation Budget to absorb tokenizer variance during prompt building.">Context Prompt Margin %<input id="contextPromptMarginPercent" type="number" min="0" max="100"></label>
           <label title="Hard floor for how much code can be injected into the prompt">Code Budget Max Floor<input id="contextCodeMaxFloor" type="number" min="1"></label>
         </div>
 

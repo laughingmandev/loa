@@ -70,6 +70,8 @@ This means changing the DAG can change both:
 1. which step is eligible to run next, and
 2. which completed results are routed directly into that step's prompt context.
 
+Furthermore, for execution primitives, the engine injects a **structurally reduced contextual plan view**. Only the currently active step and its immediate +/- 1 hop neighbors (direct parents and children) are fully detailed in the prompt. All other distant or completed steps are structurally squashed into just their core attributes (ID, Status, Goal, and Dependencies), drastically saving tokens while maintaining full structural awareness.
+
 The full conversation/task history is not blindly appended to every request. See [Memory System](memory_system.md) for the current context-composition rules.
 
 ## 4. Planned Step Lifecycle
@@ -177,7 +179,9 @@ Loa's project memory is kept current through two related mechanisms:
 1. **Crawler:** indexes unindexed source chunks and generates structural memories.
 2. **Filesystem watcher:** detects project-file changes and marks affected files stale.
 
-The watcher does not immediately regenerate every memory item at the exact moment a file changes. It debounces filesystem events and marks files stale. At engine reconciliation boundaries, stale file memories are removed, the code index is rebuilt as needed, and the crawler regenerates missing structural memories.
+The watcher does not immediately regenerate every memory item at the exact moment a file changes. It debounces filesystem events and marks files stale. To prevent ghost invalidations from race conditions (e.g., when the agent synchronously writes a file and the OS later fires an `fsnotify` event for that same write), Loa uses a `reconciledModTimes` heuristic that securely drops spurious watcher events by comparing disk modification times against the last known reconciliation.
+
+At engine reconciliation boundaries, stale file memories are removed, the code index is rebuilt as needed, and the crawler regenerates missing structural memories.
 
 The crawler itself is synchronous with respect to Loa's model calls: it locks the engine's inference path while generating Narrative Frames/keywords for code chunks. This avoids overlapping crawler inference with task inference, but it also means crawling can be inference-intensive.
 

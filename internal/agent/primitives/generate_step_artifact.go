@@ -38,11 +38,26 @@ func (p *GenerateStepArtifactPrimitive) Execute(ctx context.Context, pc Primitiv
 	stepJSONBytes, _ := json.Marshal(in.Step)
 	purpose := "COMPLETED STEP:\n" + string(stepJSONBytes)
 
-	ctxText := pc.Build(&in.Step, in.Extras, true)
-	user := ctxText + "\nPRIMITIVE INSTRUCTIONS:\n" + generateStepArtifactPrompt + "\n\nPRIMITIVE INPUT:\n" + purpose
+	req := PromptRequest{
+		PrimitiveInstructions: generateStepArtifactPrompt,
+		PrimitiveInput:        purpose,
+		Step:                  &in.Step,
+		Extras:                in.Extras,
+		IncludeInstructions:   true,
+		GlobalPlanView:        true,
+	}
+	var user string
+	_ = user
 
 	var out GenerateStepArtifactResult
-	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelExecuting, p.baseSystem, user, &out, nil)
+	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelExecuting, p.baseSystem, func(repairCost int) (string, error) {
+		req.RepairReserve = repairCost
+		prompt, promptErr := pc.BuildPrompt(req)
+		if repairCost == 0 && promptErr == nil {
+			user = prompt
+		}
+		return prompt, promptErr
+	}, &out, nil)
 
 	for i := range attempts {
 		if i == 0 {

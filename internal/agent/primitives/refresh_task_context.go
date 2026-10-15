@@ -36,14 +36,29 @@ func NewRefreshTaskContextPrimitive(cfg config.Config, llmClient llm.Client, bas
 
 func (p *RefreshTaskContextPrimitive) Execute(ctx context.Context, pc PrimitiveContext, in RefreshTaskContextInput) (state.TaskContext, error) {
 	var refreshed state.TaskContext
-	ctxText := pc.Build(in.Step, nil, true)
-	user := ctxText + "\nPRIMITIVE INSTRUCTIONS:\n" + TaskContextPrompt + "\n\nPRIMITIVE INPUT:\n" + in.Purpose
+	req := PromptRequest{
+		PrimitiveInstructions: TaskContextPrompt,
+		PrimitiveInput:        in.Purpose,
+		Step:                  in.Step,
+		Extras:                nil,
+		IncludeInstructions:   true,
+		GlobalPlanView:        true,
+	}
+	var user string
+	_ = user
 
 	attempts, err := p.llm.ChatJSON(
 		ctx,
 		p.cfg.ModelExecuting,
 		p.baseSystem,
-		user,
+		func(repairCost int) (string, error) {
+		req.RepairReserve = repairCost
+		prompt, promptErr := pc.BuildPrompt(req)
+		if repairCost == 0 && promptErr == nil {
+			user = prompt
+		}
+		return prompt, promptErr
+	},
 		&refreshed,
 		func() error { return validateTaskContext(&refreshed) },
 	)

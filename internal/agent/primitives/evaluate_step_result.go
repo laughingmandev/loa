@@ -48,11 +48,26 @@ func (p *EvaluateStepResultPrimitive) Execute(ctx context.Context, pc PrimitiveC
 	stepJSONBytes, _ := json.Marshal(in.Step)
 	purpose := fmt.Sprintf("INTENDED STEP:\n%s\n\nEXECUTOR COMPLETION CLAIM:\n%s\n\nEvaluate whether the step is actually complete.", string(stepJSONBytes), in.Claim)
 
-	ctxText := pc.Build(&in.Step, in.Extras, true)
-	user := ctxText + "\nPRIMITIVE INSTRUCTIONS:\n" + reflectPrompt + "\n\nPRIMITIVE INPUT:\n" + purpose
+	req := PromptRequest{
+		PrimitiveInstructions: reflectPrompt,
+		PrimitiveInput:        purpose,
+		Step:                  &in.Step,
+		Extras:                in.Extras,
+		IncludeInstructions:   true,
+		GlobalPlanView:        true,
+	}
+	var user string
+	_ = user
 
 	var out ReflectionResult
-	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelExecuting, p.baseSystem, user, &out, func() error {
+	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelExecuting, p.baseSystem, func(repairCost int) (string, error) {
+		req.RepairReserve = repairCost
+		prompt, promptErr := pc.BuildPrompt(req)
+		if repairCost == 0 && promptErr == nil {
+			user = prompt
+		}
+		return prompt, promptErr
+	}, &out, func() error {
 		return ValidateReflection(&out)
 	})
 

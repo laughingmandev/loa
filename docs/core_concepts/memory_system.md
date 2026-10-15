@@ -49,7 +49,7 @@ On reload, an active task that was persisted as `running` is converted to `pause
 
 ## 4. Active Task Context / Working Memory
 
-The UI's **Working Memory** view corresponds to information held in the active task state: current facts, decisions, constraints, open issues, guidance, and related task context used while the task is running.
+The UI's **Working Memory** view corresponds to information held in the active task state: current facts, decisions, constraints, open issues, guidance, and related task context used while the task is running. The `TaskState` also explicitly tracks a synthesized `Target` to focus the agent on specific operational target components or entities.
 
 At normal Planned step completion, `RefreshTaskContext` rebuilds that structured task context from the prior task context, the newly completed `StepResult`, and the task's acceptance criteria. If that model operation fails, the engine has a deterministic fallback that carries forward extracted facts/decisions.
 
@@ -85,7 +85,7 @@ This is why DAG edges are also context topology: changing a dependency can chang
 
 ### Chat History
 
-`recent_messages` controls how many recent chat messages are considered. The builder adds the newest messages first until the available prompt budget is exhausted.
+The context builder does not inject chat history into prompts. Agents pull it with the `read_history` action (available in step execution and in the pre-planning research loop): `offset` 0 is the newest message, `count` is optional and capped by `recent_messages`. The requested messages are consolidated against the agent's stated reason, and only that consolidated result is added as extra context. `ResolveAmbiguity` is the one exception: it receives the last 3 messages through its own input.
 
 ### Extra Context
 
@@ -99,10 +99,11 @@ If a piece does not fit, it can be truncated to the remaining available runes. T
 
 The current builder estimates prompt size using an approximate rune-to-token conversion. It reserves:
 
-- a safety buffer (5% of `context_budget`, with `context_minimum_buffer` as the configured minimum),
-- `output_reserve` for model output.
+- a safety buffer (dynamically calculated using `context_prompt_margin_percent` and `context_network_margin_percent` against `context_budget`),
+- `output_reserve` for model output,
+- any immutable overhead required for the current inference (such as the dynamically calculated cost of a JSON repair stack trace).
 
-The resulting prompt allowance is further bounded/floored using the context safety settings. `code_budget` limits how much extra retrieved/tool material can be injected.
+The resulting prompt allowance represents the available `slackRunes` for Extra Context (retrieved memories, tool outputs, and on-demand consolidated history reads). `code_budget` limits the maximum amount of extra material that can be injected, while dynamic squashing ensures that large, unavoidable overheads (like JSON repair loops) smoothly compress the available extra context rather than blowing past the context window.
 
 This means a task can remain within its configured context budget on every individual inference while still making hundreds of model requests over the lifetime of the task.
 

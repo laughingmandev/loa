@@ -20,7 +20,8 @@ type AmbiguityResult struct {
 }
 
 type AmbiguityInput struct {
-	UserText string
+	UserText           string
+	RecentConversation string // last few chat messages, oldest first, pre-formatted by the engine
 }
 
 type AmbiguityPrimitive struct {
@@ -39,13 +40,31 @@ func NewAmbiguityPrimitive(cfg config.Config, llmClient llm.Client, baseSystem s
 
 func (p *AmbiguityPrimitive) Execute(ctx context.Context, pc PrimitiveContext, in AmbiguityInput) (AmbiguityResult, error) {
 	purpose := "LATEST USER MESSAGE:\n" + in.UserText
+	if in.RecentConversation != "" {
+		purpose += "\n\nRECENT CONVERSATION (oldest first):\n" + in.RecentConversation
+	}
 
 	// Build context (no step, no extras, includeInstructions=false)
-	ctxText := pc.Build(nil, nil, false)
-	user := ctxText + "\nPRIMITIVE INSTRUCTIONS:\n" + ambiguityPrompt + "\n\nPRIMITIVE INPUT:\n" + purpose
+	req := PromptRequest{
+		PrimitiveInstructions: ambiguityPrompt,
+		PrimitiveInput:        purpose,
+		Step:                  nil,
+		Extras:                nil,
+		IncludeInstructions:   false,
+		GlobalPlanView:        true,
+	}
+	var user string
+	_ = user
 
 	var out AmbiguityResult
-	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelConversation, p.baseSystem, user, &out, func() error {
+	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelConversation, p.baseSystem, func(repairCost int) (string, error) {
+		req.RepairReserve = repairCost
+		prompt, promptErr := pc.BuildPrompt(req)
+		if repairCost == 0 && promptErr == nil {
+			user = prompt
+		}
+		return prompt, promptErr
+	}, &out, func() error {
 		return validateAmbiguity(&out)
 	})
 

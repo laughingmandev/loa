@@ -45,11 +45,25 @@ func NewAssessBlindExecutionPrimitive(cfg config.Config, llmClient llm.Client, b
 }
 
 func (p *AssessBlindExecutionPrimitive) Execute(ctx context.Context, pc PrimitiveContext, in AssessBlindInput) (AssessBlindDecision, error) {
-	ctxText := pc.Build(in.Step, in.Extras, true)
-	user := ctxText + "\nPRIMITIVE INSTRUCTIONS:\n" + assessBlindPrompt
+	req := PromptRequest{
+		PrimitiveInstructions: assessBlindPrompt,
+		Step:                  in.Step,
+		Extras:                in.Extras,
+		IncludeInstructions:   true,
+		GlobalPlanView:        true,
+	}
+	var user string
+	_ = user
 
 	var out AssessBlindDecision
-	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelConversation, p.baseSystem, user, &out, func() error {
+	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelConversation, p.baseSystem, func(repairCost int) (string, error) {
+		req.RepairReserve = repairCost
+		prompt, promptErr := pc.BuildPrompt(req)
+		if repairCost == 0 && promptErr == nil {
+			user = prompt
+		}
+		return prompt, promptErr
+	}, &out, func() error {
 		if out.Decision != "evaluate" && out.Decision != "continue" {
 			return fmt.Errorf("decision must be 'evaluate' or 'continue'")
 		}

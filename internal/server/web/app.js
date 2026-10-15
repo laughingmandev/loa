@@ -41,20 +41,26 @@
     'AskUser': 'Intent / conversation',
     'EvaluateUserAnswer': 'Intent / conversation',
     'DefineAcceptanceCriteria': 'Planning',
+    'PlanResearch': 'Planning',
     'PlanTask': 'Planning',
     'EvaluatePlan': 'Planning',
     'EvaluateStep': 'Planning',
     'DecomposeStep': 'Planning',
+    'LinkSteps': 'Planning',
     'Replan': 'Planning',
+    'LinkReplan': 'Planning',
     'ExecuteStep': 'Execution',
     'EvaluateActionResult': 'Evaluation / reflection',
     'EvaluateStepResult': 'Evaluation / reflection',
     'FinalTaskEvaluation': 'Evaluation / reflection',
+    'IterativeEvaluation': 'Evaluation / reflection',
     'JSONRepair': 'Repair',
     'NarrativeFrame': 'Indexing',
     'ExtractKeywords': 'Indexing',
     'ExtractDurableMemory': 'Context / memory',
     'ConsolidateContext': 'Context / memory',
+    'ConsolidateHistory': 'Context / memory',
+    'PruneMemory': 'Context / memory',
     'RerankMemory': 'Context / memory',
     'ExtractStepResult': 'Context / memory',
     'RefreshTaskContext': 'Context / memory',
@@ -62,6 +68,7 @@
     'EvaluateIntervention': 'Recovery / routing',
     'RouteNext': 'Recovery / routing',
     'SummarizeTask': 'Finalization',
+    'SynthesizeTask': 'Finalization',
     'GenerateFinalResponse': 'Finalization'
   };
 
@@ -875,8 +882,18 @@
   }
 
   function renderContext(text) {
-    if (text === renderSignatures.context) return;
+    const cfg = snapshot?.config || {};
+    const totalBudget = cfg.context_budget || 100000;
+    const netMarginPct = cfg.context_network_margin_percent ?? 2;
+    const promptMarginPct = (cfg.context_prompt_margin_percent > 0) ? cfg.context_prompt_margin_percent : 15;
+    const outputReserve = cfg.output_reserve || 4000;
+    const netBudget = totalBudget - Math.floor((totalBudget * netMarginPct) / 100);
+    const promptBudget = netBudget - Math.floor((netBudget * promptMarginPct) / 100);
+    const budget = Math.max(1, promptBudget - outputReserve);
+
+    if (text === renderSignatures.context && budget === renderSignatures.contextBudget) return;
     renderSignatures.context = text;
+    renderSignatures.contextBudget = budget;
     
     let formattedText = esc(text || 'No inference context yet.');
     formattedText = formattedText.replace(/```([a-z]*)\n([\s\S]*?)```/g, (match, lang, code) => {
@@ -891,7 +908,6 @@
     const out = $('#context');
     if (out) out.innerHTML = formattedText;
 
-    const budget = snapshot?.config?.context_budget || 100000;
     const tokens = Math.floor((text || '').length / 4);
     const meterFill = $('#budgetMeterFill');
     const meterText = $('#budgetMeterText');
@@ -1746,67 +1762,48 @@
     }
   };
 
-  let outPct = 25, codePct = 50;
+  let outPct = 25, codePct = 75;
   
   function updateSliderUI() {
+    outPct = Math.max(5, Math.min(95, outPct));
+    codePct = 100 - outPct;
     const t1 = outPct;
-    const t2 = outPct + codePct;
     $('#sliceOutput').style.width = t1 + '%';
     $('#sliceCode').style.left = t1 + '%';
     $('#sliceCode').style.width = codePct + '%';
-    $('#sliceChat').style.left = t2 + '%';
-    $('#sliceChat').style.width = (100 - t2) + '%';
     
     $('#thumb1').style.left = t1 + '%';
-    $('#thumb2').style.left = t2 + '%';
     
     const total = +$('#contextBudget').value || 100000;
     const outV = Math.floor(total * (outPct/100));
     const codeV = Math.floor(total * (codePct/100));
-    const chatV = total - outV - codeV;
     
     $('#valOutput').textContent = outPct + '% [' + outV.toLocaleString() + ']';
     $('#valCode').textContent = codePct + '% [' + codeV.toLocaleString() + ']';
-    $('#valChat').textContent = (100 - t2) + '% [' + chatV.toLocaleString() + ']';
   }
 
   function setupSlider() {
-    let activeThumb = null;
+    let dragging = false;
     const slider = $('#budgetSlider');
     if (!slider) return;
 
     function onMove(e) {
-      if (!activeThumb) return;
+      if (!dragging) return;
       const rect = slider.getBoundingClientRect();
-      let pct = ((e.clientX - rect.left) / rect.width) * 100;
-      pct = Math.max(5, Math.min(95, Math.round(pct)));
-      
-      if (activeThumb === 1) {
-        const t2 = outPct + codePct;
-        if (pct >= t2 - 5) pct = t2 - 5;
-        outPct = pct;
-      } else {
-        const t1 = outPct;
-        if (pct <= t1 + 5) pct = t1 + 5;
-        codePct = pct - t1;
-      }
+      let pct = Math.round(((e.clientX - rect.left) / rect.width) * 100);
+      outPct = Math.max(5, Math.min(95, pct));
+      codePct = 100 - outPct;
       updateSliderUI();
     }
     
     function onUp() {
-      activeThumb = null;
+      dragging = false;
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
     }
     
-    $('#thumb1').addEventListener('mousedown', e => {
-      activeThumb = 1;
-      document.addEventListener('mousemove', onMove);
-      document.addEventListener('mouseup', onUp);
-    });
-    
-    $('#thumb2').addEventListener('mousedown', e => {
-      activeThumb = 2;
+    $('#thumb1').addEventListener('mousedown', () => {
+      dragging = true;
       document.addEventListener('mousemove', onMove);
       document.addEventListener('mouseup', onUp);
     });
@@ -1858,12 +1855,13 @@
     $('#contextBudget').value = c.context_budget || 100000;
     const total = c.context_budget || 100000;
     outPct = Math.round(((c.output_reserve || 4000) / total) * 100) || 25;
-    codePct = Math.round(((c.code_budget || 8000) / total) * 100) || 50;
+    outPct = Math.max(5, Math.min(95, outPct));
+    codePct = 100 - outPct;
     updateSliderUI();
-    $('#recentMessages').value = c.recent_messages || 12;
+    $('#recentMessages').value = c.recent_messages || 10;
     $('#contextRecentBreadcrumbs').value = c.context_recent_breadcrumbs || 5;
-    $('#contextMinBuffer').value = c.context_minimum_buffer || 2000;
-    $('#contextSafeBudget').value = c.context_minimum_safe_budget || 4000;
+    $('#contextNetworkMarginPercent').value = c.context_network_margin_percent || 2;
+    $('#contextPromptMarginPercent').value = c.context_prompt_margin_percent || 15;
     $('#contextCodeMaxFloor').value = c.context_code_budget_max_floor || 8000;
     $('#maxPromptToolOutputBytes').value = c.max_prompt_tool_output_bytes || 30000;
     $('#memoryTopK').value = c.memory_top_k || 8;
@@ -1872,6 +1870,7 @@
     setSelect('#evaluationModeSettings', c.evaluation_mode);
     $('#maxPlanDepth').value = c.max_plan_depth || 5;
     $('#maxExecutionLoops').value = c.max_execution_loops || 80;
+    $('#maxPrerequisitesPerStep').value = c.max_prerequisites_per_step || 4;
     $('#modelTimeout').value = c.model_timeout_seconds || 600;
     $('#commandTimeout').value = c.command_timeout_seconds || 120;
     $('#llmPollingTimeout').value = c.llm_polling_timeout_seconds || 15;
@@ -1888,8 +1887,8 @@
     $('#memoryPoolExpansion').value = c.memory_pool_expansion_limit || 4;
     $('#contextRecentBreadcrumbs').value = c.context_recent_breadcrumbs || 5;
     $('#blindActionThreshold').value = c.blind_action_threshold || 5;
-    $('#contextMinBuffer').value = c.context_minimum_buffer || 2000;
-    $('#contextSafeBudget').value = c.context_minimum_safe_budget || 4000;
+    $('#contextNetworkMarginPercent').value = c.context_network_margin_percent || 2;
+    $('#contextPromptMarginPercent').value = c.context_prompt_margin_percent || 15;
     $('#contextCodeMaxFloor').value = c.context_code_budget_max_floor || 8000;
     $('#projectInstructions').value = c.project_instructions || '';
     $('#settingsIgnore').value = ignoreText || '';
@@ -1936,8 +1935,8 @@
       recent_messages: +$('#recentMessages').value,
       memory_top_k: +$('#memoryTopK').value,
       context_recent_breadcrumbs: +$('#contextRecentBreadcrumbs').value,
-      context_minimum_buffer: +$('#contextMinBuffer').value,
-      context_minimum_safe_budget: +$('#contextSafeBudget').value,
+      context_network_margin_percent: +$('#contextNetworkMarginPercent').value,
+      context_prompt_margin_percent: +$('#contextPromptMarginPercent').value,
       context_code_budget_max_floor: +$('#contextCodeMaxFloor').value,
       max_prompt_tool_output_bytes: +$('#maxPromptToolOutputBytes').value,
       memory_candidate_pool: +$('#memoryPool').value,
@@ -1945,6 +1944,7 @@
       evaluation_mode: $('#evaluationModeSettings').value,
       max_plan_depth: +$('#maxPlanDepth').value,
       max_execution_loops: +$('#maxExecutionLoops').value,
+      max_prerequisites_per_step: +$('#maxPrerequisitesPerStep').value,
       model_timeout_seconds: +$('#modelTimeout').value,
       command_timeout_seconds: +$('#commandTimeout').value,
       llm_polling_timeout_seconds: +$('#llmPollingTimeout').value,
@@ -1961,8 +1961,8 @@
       memory_pool_expansion_limit: +$('#memoryPoolExpansion').value,
       context_recent_breadcrumbs: +$('#contextRecentBreadcrumbs').value,
       blind_action_threshold: +$('#blindActionThreshold').value,
-      context_minimum_buffer: +$('#contextMinBuffer').value,
-      context_minimum_safe_budget: +$('#contextSafeBudget').value,
+      context_network_margin_percent: +$('#contextNetworkMarginPercent').value,
+      context_prompt_margin_percent: +$('#contextPromptMarginPercent').value,
       context_code_budget_max_floor: +$('#contextCodeMaxFloor').value,
       project_instructions: $('#projectInstructions').value,
       permissions: {mode: $('input[name="permMode"]:checked')?.value || 'ask_selected', ask_for: ask}

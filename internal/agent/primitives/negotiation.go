@@ -101,11 +101,26 @@ func ValidateNegotiation(d *NegotiationDecision) error {
 }
 
 func (p *NegotiationPrimitive) Execute(ctx context.Context, pc PrimitiveContext, in NegotiationInput) (NegotiationDecision, error) {
-	ctxText := pc.Build(nil, in.Extras, true)
-	user := ctxText + "\nPRIMITIVE INSTRUCTIONS:\n" + NegotiationPrompt + "\n\nPRIMITIVE INPUT:\n" + in.Purpose
+	req := PromptRequest{
+		PrimitiveInstructions: NegotiationPrompt,
+		PrimitiveInput:        in.Purpose,
+		Step:                  nil,
+		Extras:                in.Extras,
+		IncludeInstructions:   true,
+		GlobalPlanView:        true,
+	}
+	var user string
+	_ = user
 
 	var out NegotiationDecision
-	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelConversation, p.baseSystem, user, &out, func() error {
+	attempts, err := p.llm.ChatJSON(ctx, p.cfg.ModelConversation, p.baseSystem, func(repairCost int) (string, error) {
+		req.RepairReserve = repairCost
+		prompt, promptErr := pc.BuildPrompt(req)
+		if repairCost == 0 && promptErr == nil {
+			user = prompt
+		}
+		return prompt, promptErr
+	}, &out, func() error {
 		return ValidateNegotiation(&out)
 	})
 
