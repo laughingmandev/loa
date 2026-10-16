@@ -51,10 +51,12 @@ jobs:
               cd "$TMP_LLAMA_DIR"
               git checkout "$LLAMA_GO_COMMIT"
               git submodule update --init --recursive
+              sed -i 's/-march=native -mtune=native//g' Makefile
+              sed -i 's/-mcpu=native//g' Makefile
               if [ "${{ matrix.goarch }}" = "arm64" ]; then
-                sed -i 's/-march=native -mtune=native//g' Makefile
-                sed -i 's/-mcpu=native//g' Makefile
                 sed -i 's/cmake \.\.\/llama\.cpp/cmake ..\/llama.cpp -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=aarch64 -DGGML_NATIVE=OFF/g' Makefile
+              else
+                sed -i 's/cmake \.\.\/llama\.cpp/cmake ..\/llama.cpp -DGGML_NATIVE=OFF -DGGML_AVX512=OFF/g' Makefile
               fi
               make libbinding.a
             )
