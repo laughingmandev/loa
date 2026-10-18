@@ -18,7 +18,7 @@
   let appVersion = 'Unknown';
 
   const expandedItems = new Set();
-  const renderSignatures = { chat: '', plan: '', context: '', memory: '', log: '', sessions: '', inference: '', graph: '' };
+  const renderSignatures = { chat: '', plan: '', context: '', memory: '', log: '', sessions: '', inference: '', graph: '', fileTree: '' };
   const logCategories = ['tool', 'memory_lookup', 'indexing', 'negotiation', 'system', 'plan'];
   const activeLogFilters = new Set(logCategories);
   const permissionTools = ['read_file','read_range','search_path','search_text','find_symbol','list_symbols','write_file','patch_file','create_directory','delete_file','delete_directory','execute_process','execute_shell','git_status','git_diff','read_tool_output'];
@@ -131,8 +131,20 @@
   }
 
   function renderMemoryTree(files) {
+    const safeFiles = Array.isArray(files) ? files : [];
+    const sig = signature(safeFiles);
+    if (sig === renderSignatures.fileTree) return;
+    renderSignatures.fileTree = sig;
+
+    const activePath = $('#fileTree .file-tree-node.active')?.dataset?.path || null;
+    const closedDirs = new Set(
+      $$('#fileTree details.file-tree-dir-details:not([open])')
+        .map(d => d.dataset.dirPath)
+        .filter(Boolean)
+    );
+
     const tree = {};
-    for (const file of files) {
+    for (const file of safeFiles) {
       const parts = file.split('/');
       let curr = tree;
       for (let i = 0; i < parts.length; i++) {
@@ -142,14 +154,17 @@
       }
     }
 
-    const html = [`<div class="file-tree-node special-node" data-path="__GLOBAL__" style="margin-bottom: 8px; border-bottom: 1px solid var(--line); padding-bottom: 8px;">🌐 GLOBAL KNOWLEDGE</div>`];
+    const globalActive = activePath === '__GLOBAL__' ? ' active' : '';
+    const html = [`<div class="file-tree-node special-node${globalActive}" data-path="__GLOBAL__" style="margin-bottom: 8px; border-bottom: 1px solid var(--line); padding-bottom: 8px;">🌐 GLOBAL KNOWLEDGE</div>`];
     function walk(node, path) {
       for (const [k, v] of Object.entries(node).sort((a,b) => (a[1]===null)-(b[1]===null) || a[0].localeCompare(b[0]))) {
         const curPath = path ? path + '/' + k : k;
         if (v === null) {
-          html.push(`<div class="file-tree-node" data-path="${curPath}">📄 ${k}</div>`);
+          const isActive = activePath === curPath ? ' active' : '';
+          html.push(`<div class="file-tree-node${isActive}" data-path="${esc(curPath)}">📄 ${esc(k)}</div>`);
         } else {
-          html.push(`<details class="file-tree-dir-details" open><summary class="file-tree-dir">📁 ${k}</summary><div style="margin-left:10px;">`);
+          const openAttr = closedDirs.has(curPath) ? '' : ' open';
+          html.push(`<details class="file-tree-dir-details" data-dir-path="${esc(curPath)}"${openAttr}><summary class="file-tree-dir">📁 ${esc(k)}</summary><div style="margin-left:10px;">`);
           walk(v, curPath);
           html.push(`</div></details>`);
         }
@@ -516,6 +531,9 @@
     renderContext(rt.last_context || 'No inference context yet.');
     renderWorkingMemory(st.active_task, x.memory || [], rt.last_context || '');
     renderMemory(x.memory || [], x.task_summaries || []);
+    if (Array.isArray(x.project_files)) {
+      renderMemoryTree(x.project_files);
+    }
     renderLog(st.execution_log || []);
     renderUploads(st.uploads || []);
     renderAttachments(st.active_attachments || []);
@@ -1372,7 +1390,7 @@
     b.classList.add('active');
     $('#tab-' + b.dataset.tab).classList.add('active');
 
-    if (b.dataset.tab === 'memory-viewer' && !memoryTreeFetched) {
+    if (b.dataset.tab === 'memory-viewer') {
       memoryTreeFetched = true;
       fetchMemoryTree();
     }
@@ -1460,7 +1478,8 @@
       }
       if (name === 'reindex') {
         const r = await api('/api/reindex', {method:'POST'});
-        toast(`Index rebuilt: ${r.files} files`);
+        toast(`Index rebuilt: ${r.files ?? 0} files`);
+        await fetchMemoryTree();
         return;
       }
       if (name === 'dump') {

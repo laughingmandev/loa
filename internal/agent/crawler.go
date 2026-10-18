@@ -19,6 +19,9 @@ import (
 // for unindexed files, and saves them to the LTM database.
 // This function locks the engine to prevent concurrent LLM inferences.
 func (e *Engine) RunCrawler(ctx context.Context) error {
+	if e.index == nil {
+		return nil
+	}
 
 	e.log(state.LogSystem, "Crawler", "starting synchronous LTM crawler", "", "")
 
@@ -44,6 +47,9 @@ func (e *Engine) RunCrawler(ctx context.Context) error {
 		b, fileErr := os.ReadFile(absPath)
 		if fileErr != nil {
 			e.log(state.LogSystem, "Crawler", "failed to read file for hash", file, fileErr.Error())
+			continue
+		}
+		if len(strings.TrimSpace(string(b))) == 0 {
 			continue
 		}
 		fileHash := fmt.Sprintf("%08x", crc32.ChecksumIEEE(b))

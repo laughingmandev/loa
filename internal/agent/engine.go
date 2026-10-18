@@ -711,6 +711,9 @@ func (e *Engine) runTask(ctx context.Context, goal string, mayModify bool, title
 		}
 		e.store.UpdateActiveTask(func(t *state.TaskState) {
 			t.Plan.Steps = append(t.Plan.Steps, step)
+			if len(planningExtras) > 0 {
+				t.Extras = append(t.Extras, planningExtras...)
+			}
 		})
 	} else {
 		var err error
@@ -843,11 +846,6 @@ func (e *Engine) runActiveTask(ctx context.Context) error {
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
-		}
-		if e.hasStaleFiles() {
-			if err := e.repairStaleFiles(ctx); err != nil {
-				return err
-			}
 		}
 		snap := e.store.Snapshot()
 		if snap.ActiveTask == nil {
@@ -1479,11 +1477,6 @@ func (e *Engine) executeStep(ctx context.Context, stepID uint64) (string, string
 		if err != nil {
 			return "", "", err
 		}
-		if e.hasStaleFiles() {
-			if err := e.repairStaleFiles(ctx); err != nil {
-				e.log(state.LogSystem, "Engine", "failed to repair stale files during step execution", "", err.Error())
-			}
-		}
 		interventionOutcome, interventionReason, err := e.processInterventions(ctx, &step)
 		if err != nil {
 			return "", "", err
@@ -1600,7 +1593,7 @@ func (e *Engine) executeStep(ctx context.Context, stepID uint64) (string, string
 			}
 			toolIDs = append(toolIDs, res.ToolCallID)
 			trackToolFiles(*d.Tool, res, filesRead, filesChanged)
-			if res.Success && (d.Tool.Kind == state.ToolWriteFile || d.Tool.Kind == state.ToolPatchFile || d.Tool.Kind == state.ToolDeleteFile) {
+			if res.Success && (d.Tool.Kind == state.ToolWriteFile || d.Tool.Kind == state.ToolPatchFile || d.Tool.Kind == state.ToolPatchASTNode || d.Tool.Kind == state.ToolDeleteFile) {
 				var x struct{ Path string `json:"path"` }
 				if err := json.Unmarshal(d.Tool.Input, &x); err == nil && x.Path != "" {
 					e.markStale(filepath.Join(e.root, x.Path))
@@ -1747,6 +1740,11 @@ func (e *Engine) executeStep(ctx context.Context, stepID uint64) (string, string
 				summaryPurpose := "TASK:\n" + step.Goal + "\n\nRESULTS:\n" + mustJSON(compactStepResults(snap.ActiveTask.StepResults)) + "\n\nFINAL RESPONSE:\n" + synRes.Response
 				summaryText := e.finalizeTaskMemory(ctx, snap, baseSystem, summaryPurpose)
 				e.addMemory(ctx, state.MemoryTask, summaryText+"\n\nOutput:\n"+synRes.Response, nil, nil, state.MessageAgent)
+				if e.hasStaleFiles() {
+					if err := e.repairStaleFiles(ctx); err != nil {
+						e.log(state.LogSystem, "Watcher", "failed to repair stale files after fast task completion", "", err.Error())
+					}
+				}
 				e.store.CompleteActiveTask(state.TaskCompleted)
 				extras = []string{}
 				return "fast_complete", "", nil
@@ -2208,13 +2206,17 @@ func (e *Engine) finishTask(ctx context.Context, check primitives.FinalCheck) er
 	}
 
 	goal := snap.ActiveTask.Goal
+	e.addAgentMessage(answer, false)
 	summaryPurpose := "TASK:\n" + goal + "\n\nRESULTS:\n" + mustJSON(compactStepResults(snap.ActiveTask.StepResults)) + "\n\nFINAL RESPONSE:\n" + answer
 	summaryText := e.finalizeTaskMemory(ctx, snap, baseSystem, summaryPurpose)
+	e.addMemory(ctx, state.MemoryTask, summaryText+"\n\nOutput:\n"+answer, nil, nil, state.MessageAgent)
+	if e.hasStaleFiles() {
+		if err := e.repairStaleFiles(ctx); err != nil {
+			e.log(state.LogSystem, "Watcher", "failed to repair stale files after task completion", "", err.Error())
+		}
+	}
 
 	e.store.CompleteActiveTask(state.TaskCompleted)
-
-	e.addAgentMessage(answer, false)
-	e.addMemory(ctx, state.MemoryTask, summaryText+"\n\nOutput:\n"+answer, nil, nil, state.MessageAgent)
 
 	if err := e.store.Save("autosave"); err != nil {
 		return fmt.Errorf("auto-save completed task: %w", err)

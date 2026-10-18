@@ -34,8 +34,11 @@ func (e *Engine) markStale(absPath string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	// ModTime check to ignore ghost fsnotify events
+	// ModTime check to ignore ghost fsnotify events, and skip directory paths
 	if stat, err := os.Stat(absPath); err == nil {
+		if stat.IsDir() {
+			return
+		}
 		if e.reconciledModTimes != nil {
 			if lastMod, ok := e.reconciledModTimes[rel]; ok {
 				if stat.ModTime().UnixNano() <= lastMod.UnixNano() {
@@ -51,6 +54,25 @@ func (e *Engine) markStale(absPath string) {
 
 	e.staleFiles[rel] = true
 	e.invalidatedPaths.Store(rel, true)
+}
+
+func (e *Engine) maybeRepairStaleFilesWhileIdle(ctx context.Context) {
+	e.mu.Lock()
+	if e.running || e.needsProjectSetup || len(e.staleFiles) == 0 {
+		e.mu.Unlock()
+		return
+	}
+	e.running = true
+	e.systemTaskReason = "indexing"
+	e.mu.Unlock()
+	defer e.UnlockSystemTask()
+
+	for e.hasStaleFiles() {
+		if err := e.repairStaleFiles(ctx); err != nil {
+			e.log(state.LogSystem, "Watcher", "idle stale file repair failed", "", err.Error())
+			return
+		}
+	}
 }
 
 func (e *Engine) repairStaleFiles(ctx context.Context) error {
@@ -87,6 +109,8 @@ func (e *Engine) repairStaleFiles(ctx context.Context) error {
 	for _, f := range filtered {
 		if stat, err := os.Stat(filepath.Join(e.root, f)); err == nil {
 			e.reconciledModTimes[f] = stat.ModTime()
+		} else {
+			delete(e.reconciledModTimes, f)
 		}
 	}
 	e.mu.Unlock()
@@ -95,6 +119,10 @@ func (e *Engine) repairStaleFiles(ctx context.Context) error {
 
 	for _, file := range filtered {
 		_ = e.memStore.RemoveMemoriesByAnchor(file)
+	}
+
+	if e.index == nil {
+		return nil
 	}
 
 	// Refresh CTAGS index synchronously
@@ -161,28 +189,69 @@ func (e *Engine) StartWatcher(ctx context.Context) error {
 					if strings.Contains(filepath.Base(event.Name), ".loa-write-") {
 						continue
 					}
-					
+
 					if strings.Contains(event.Name, string(filepath.Separator)+".loa"+string(filepath.Separator)+"attachments"+string(filepath.Separator)) {
 						go e.healAttachment(event.Name)
 						continue
 					}
-					
+
+					_, isIgnoredNow := utils.ReadLoaignore(e.root)
 					rel, err := filepath.Rel(e.root, event.Name)
 					if err == nil && rel != "." {
 						if strings.HasPrefix(rel, ".") || strings.Contains(rel, string(filepath.Separator)+".") {
 							continue
 						}
-						if isIgnored(rel) {
+						if isIgnoredNow(rel) {
 							continue
 						}
 					}
+
+					var discoveredFiles []string
+					isCreatedDir := false
 					if event.Op&fsnotify.Create == fsnotify.Create {
 						if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
-							_ = watcher.Add(event.Name)
+							isCreatedDir = true
+							_ = filepath.Walk(event.Name, func(subPath string, subInfo os.FileInfo, walkErr error) error {
+								if walkErr != nil {
+									return nil
+								}
+								subRel, relErr := filepath.Rel(e.root, subPath)
+								if relErr == nil && subRel != "." {
+									if strings.HasPrefix(subRel, ".") || strings.Contains(subRel, string(filepath.Separator)+".") {
+										if subInfo.IsDir() {
+											return filepath.SkipDir
+										}
+										return nil
+									}
+									if isIgnoredNow(subRel) {
+										if subInfo.IsDir() {
+											return filepath.SkipDir
+										}
+										return nil
+									}
+								}
+								if subInfo.IsDir() {
+									_ = watcher.Add(subPath)
+									return nil
+								}
+								discoveredFiles = append(discoveredFiles, subPath)
+								return nil
+							})
 						}
 					}
+
 					timerMu.Lock()
-					events[event.Name] = true
+					if isCreatedDir {
+						for _, df := range discoveredFiles {
+							events[df] = true
+						}
+					} else {
+						events[event.Name] = true
+					}
+					if len(events) == 0 {
+						timerMu.Unlock()
+						continue
+					}
 					if timer != nil {
 						timer.Stop()
 					}
@@ -203,6 +272,7 @@ func (e *Engine) StartWatcher(ctx context.Context) error {
 							e.markStale(f)
 						}
 						e.log(state.LogSystem, "Watcher", "fsnotify event triggered cache invalidation", strings.Join(pending, ", "), "")
+						e.maybeRepairStaleFilesWhileIdle(ctx)
 					})
 					timerMu.Unlock()
 				}

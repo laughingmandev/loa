@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/laughingmandev/loa/internal/utils"
 )
@@ -202,11 +205,41 @@ func (i *Index) Rebuild(ctx context.Context) error {
 		i.root,
 	)
 
-	if runErr != nil && len(syms) == 0 {
+	_, isLoaIgnored := utils.ReadLoaignore(i.root)
+	files := groupAndNormalize(filterExcludedSymbols(syms, isLoaIgnored))
+
+	_ = filepath.WalkDir(i.root, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		rel, err := filepath.Rel(i.root, path)
+		if err != nil {
+			return nil
+		}
+		relClean := filepath.ToSlash(filepath.Clean(rel))
+		if relClean == "." {
+			return nil
+		}
+		if d.IsDir() {
+			if isExcludedPath(relClean, isLoaIgnored) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if isExcludedPath(relClean, isLoaIgnored) {
+			return nil
+		}
+		if _, exists := files[relClean]; !exists {
+			if isTextFile(path) {
+				files[relClean] = []Symbol{}
+			}
+		}
+		return nil
+	})
+
+	if runErr != nil && len(files) == 0 {
 		return runErr
 	}
-
-	files := groupAndNormalize(filterIgnoredSymbols(syms))
 
 	i.mu.Lock()
 	i.files = files
@@ -229,7 +262,8 @@ func (i *Index) RefreshFile(ctx context.Context, rel string) error {
 	}
 
 	relClean := filepath.ToSlash(filepath.Clean(rel))
-	if isIgnoredPath(relClean) {
+	_, isLoaIgnored := utils.ReadLoaignore(i.root)
+	if isExcludedPath(relClean, isLoaIgnored) {
 		i.RemoveFile(relClean)
 		return nil
 	}
@@ -237,6 +271,11 @@ func (i *Index) RefreshFile(ctx context.Context, rel string) error {
 	abs, err := filepath.Abs(filepath.Join(i.root, rel))
 	if err != nil {
 		return err
+	}
+
+	if _, statErr := os.Stat(abs); statErr != nil {
+		i.RemoveFile(relClean)
+		return nil
 	}
 
 	syms, runErr := i.run(ctx, abs)
@@ -260,12 +299,16 @@ func (i *Index) RefreshFile(ctx context.Context, rel string) error {
 		}
 	}
 
-	norm := groupAndNormalize(filterIgnoredSymbols(syms))[relClean]
+	norm := groupAndNormalize(filterExcludedSymbols(syms, isLoaIgnored))[relClean]
 
 	i.mu.Lock()
 
 	if len(norm) == 0 {
-		delete(i.files, relClean)
+		if isTextFile(abs) {
+			i.files[relClean] = []Symbol{}
+		} else {
+			delete(i.files, relClean)
+		}
 	} else {
 		i.files[relClean] = norm
 	}
@@ -274,6 +317,24 @@ func (i *Index) RefreshFile(ctx context.Context, rel string) error {
 	i.mu.Unlock()
 
 	return nil
+}
+
+var builtinExcludes = map[string]bool{
+	".git":         true,
+	"node_modules": true,
+	"vendor":       true,
+	"dist":         true,
+	"build":        true,
+	".venv":        true,
+	"venv":         true,
+	"target":       true,
+	".cache":       true,
+	"coverage":     true,
+	".loa":         true,
+	".loa.json":    true,
+	".loaignore":   true,
+	"loa":          true,
+	"loa-sandbox":  true,
 }
 
 func isIgnoredPath(path string) bool {
@@ -285,14 +346,82 @@ func isIgnoredPath(path string) bool {
 	return clean == ".loa" || strings.HasPrefix(clean, ".loa/") || strings.Contains(clean, "/.loa/")
 }
 
+func isExcludedPath(rel string, isLoaIgnored func(string) bool) bool {
+	clean := filepath.ToSlash(filepath.Clean(rel))
+	if clean == "." || clean == "" || strings.HasPrefix(clean, "../") || clean == ".." {
+		return true
+	}
+	if isIgnoredPath(clean) {
+		return true
+	}
+	base := filepath.Base(clean)
+	if strings.Contains(base, ".loa-write-") {
+		return true
+	}
+	parts := strings.Split(clean, "/")
+	prefix := ""
+	for idx, p := range parts {
+		if p == "" {
+			continue
+		}
+		if strings.HasPrefix(p, ".") || builtinExcludes[p] {
+			return true
+		}
+		if idx == 0 {
+			prefix = p
+		} else {
+			prefix = prefix + "/" + p
+		}
+		if isLoaIgnored != nil && (isLoaIgnored(p) || isLoaIgnored(prefix)) {
+			return true
+		}
+	}
+	if isLoaIgnored != nil && isLoaIgnored(clean) {
+		return true
+	}
+	return false
+}
+
+func isTextFile(absPath string) bool {
+	info, err := os.Stat(absPath)
+	if err != nil || info.IsDir() || !info.Mode().IsRegular() {
+		return false
+	}
+	f, err := os.Open(absPath)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+
+	var buf [8192]byte
+	n, err := f.Read(buf[:])
+	if err != nil && !errors.Is(err, io.EOF) {
+		return false
+	}
+	sample := buf[:n]
+	if bytes.IndexByte(sample, 0) != -1 {
+		return false
+	}
+	if n == len(buf) {
+		for len(sample) > 0 && !utf8.Valid(sample) && len(buf)-len(sample) < utf8.UTFMax {
+			sample = sample[:len(sample)-1]
+		}
+	}
+	return utf8.Valid(sample)
+}
+
 func filterIgnoredSymbols(syms []Symbol) []Symbol {
+	return filterExcludedSymbols(syms, nil)
+}
+
+func filterExcludedSymbols(syms []Symbol, isLoaIgnored func(string) bool) []Symbol {
 	if len(syms) == 0 {
 		return nil
 	}
 
 	out := make([]Symbol, 0, len(syms))
 	for _, s := range syms {
-		if isIgnoredPath(s.File) {
+		if isExcludedPath(s.File, isLoaIgnored) {
 			continue
 		}
 		out = append(out, s)

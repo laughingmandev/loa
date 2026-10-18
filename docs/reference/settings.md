@@ -78,9 +78,9 @@ These decay settings affect search scoring. They do not define a memory-deletion
 
 | JSON field | Default | Current use |
 | --- | ---: | --- |
-| `crawler_small_file_threshold` | `200` | Line threshold used by crawler chunking. |
-| `crawler_max_chunk_lines` | `150` | Crawler chunk-size target/limit used when grouping indexed blocks. |
-| `fs_watcher_debounce_ms` | `500` | Filesystem event debounce before changed files are marked stale. |
+| `crawler_small_file_threshold` | `200` | Line threshold below which a file (or any indexed text file with 0 ctags symbols) is crawled as a single chunk. |
+| `crawler_max_chunk_lines` | `150` | Crawler chunk-size target/limit used when grouping ctags symbol blocks. |
+| `fs_watcher_debounce_ms` | `500` | Filesystem event debounce before changed files are marked stale (and immediately crawled if Loa is idle, or deferred to memory retrieval / task completion if a task is running). |
 
 ## Tool Output
 
