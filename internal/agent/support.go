@@ -196,7 +196,7 @@ func trackToolFiles(req tools.Request, res state.ToolResult, reads, changes map[
 	switch req.Kind {
 	case state.ToolReadFile, state.ToolReadRange:
 		reads[x.Path] = true
-	case state.ToolWriteFile, state.ToolPatchFile, state.ToolDeleteFile:
+	case state.ToolWriteFile, state.ToolPatchFile, state.ToolPatchASTNode, state.ToolDeleteFile:
 		changes[x.Path] = true
 	}
 }
@@ -384,6 +384,11 @@ func (e *Engine) prefetchDiscussionMemory(ctx context.Context, text string, step
 }
 
 func (e *Engine) retrieveMemoryRound(ctx context.Context, query string, allowedKinds []string, step *state.PlanStep, round int) (string, error) {
+	if e.hasStaleFiles() {
+		if err := e.repairStaleFiles(ctx); err != nil {
+			e.log(state.LogSystem, "Watcher", "failed to repair stale files before memory retrieval", "", err.Error())
+		}
+	}
 	emb, err := e.tryEmbed(ctx, query)
 	if err != nil {
 		return "", err

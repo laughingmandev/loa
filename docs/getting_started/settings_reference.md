@@ -58,11 +58,11 @@ See the field-level [Settings Reference](../reference/settings.md) for defaults.
 
 Current controls are:
 
-- **FS Watcher Debounce (ms)**: coalesces filesystem events before files are marked stale.
+- **FS Watcher Debounce (ms)**: coalesces `fsnotify` filesystem events before affected files are marked stale and evicted from the step read cache. If Loa is currently idle when the debounce window finishes, it immediately repairs and crawls the stale files in the background; if a task is running, crawling is deferred until the next memory retrieval (`retrieveMemoryRound`) or task completion.
 - **Max Tool Output Bytes**: maximum tool result size retained by the Tool Manager before it truncates the result and marks it `Truncated`.
-- **Crawler Small File Threshold**: line threshold below which a source file can be processed as one crawler chunk instead of symbol-oriented chunking.
-- **Crawler Max Chunk Lines**: target upper bound used when the crawler groups source/index blocks into Narrative Frame chunks.
-- **`.loaignore`**: project-specific paths ignored by indexing/watcher logic.
+- **Crawler Small File Threshold**: line threshold below which an indexed text file (or any text file with zero Universal Ctags symbols) is processed as one whole-file crawler chunk instead of symbol-oriented chunking.
+- **Crawler Max Chunk Lines**: target upper bound used when the crawler groups ctags symbol ranges into Narrative Frame chunks.
+- **`.loaignore`**: project-specific paths ignored by indexing, crawler, and watcher logic (evaluated dynamically alongside Loa's built-in exclusions for hidden files/directories, build/dependency folders, and binary files).
 
 The current tab does **not** expose a `Use AST Search` toggle, generic `Max File Size`, or indexing `Top-K Results` control.
 

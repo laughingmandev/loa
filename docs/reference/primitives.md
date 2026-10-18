@@ -57,7 +57,7 @@ The engine also has a final-response generation call for some flows; that call i
 
 ## 6. Project Crawling and Memory Extraction
 
-- **`NarrativeFrame`**: generates a structural narrative representation for a source chunk during crawling.
+- **`NarrativeFrame`**: generates a structural narrative representation for an indexed source or text chunk during crawling.
 - **`ExtractKeywords`**: extracts index keys from Narrative Frames/task summaries and other memory candidates before embedding/retrieval storage.
 
 The engine also performs durable-memory extraction from user messages and memory retrieval/reranking through its memory pipeline. Those operations should be described according to the current engine/memory implementation rather than assumed to be a generic conversation-compression system.
@@ -70,7 +70,7 @@ Several important operations are not model primitives:
 - **Context builder**: deterministically assembles the current prompt from task state, DAG prerequisites, messages, and extras.
 - **State store**: persists session/task/tool state.
 - **Memory store**: persists project/session memory items and task summaries.
-- **Filesystem watcher**: detects changes and marks files stale.
-- **Crawler orchestration**: synchronously coordinates indexing/chunking plus Narrative Frame/keyword/embedding generation.
+- **Filesystem watcher**: detects disk changes (including newly created subdirectories), marks non-ignored text/code files stale, and either triggers an immediate background crawl when the engine is idle or defers reconciliation until memory retrieval / task completion when a task is running.
+- **Crawler orchestration**: synchronously coordinates ctags + text-file indexing, chunking, and `NarrativeFrame`/`ExtractKeywords`/embedding generation across Boot Scan, idle watcher repairs, Just-In-Time pre-retrieval flushes, and post-task finalization.
 
 Keeping these distinctions matters when reasoning about Loa's control flow and inference count.

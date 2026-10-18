@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -165,7 +166,8 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 		sessionSummaries = mem.Summaries()
 	}
 	artifacts := s.getArtifacts()
-	writeJSON(w, http.StatusOK, map[string]any{"state": snap, "runtime": s.agent.Status(), "config": s.cfg.Get(), "sessions": s.store.SessionStatus(), "persistence": s.store.PersistenceStatus(), "loaignore": string(ignoreData), "memory": sessionMemories, "task_summaries": sessionSummaries, "artifacts": artifacts})
+	projectFiles := s.getProjectFiles()
+	writeJSON(w, http.StatusOK, map[string]any{"state": snap, "runtime": s.agent.Status(), "config": s.cfg.Get(), "sessions": s.store.SessionStatus(), "persistence": s.store.PersistenceStatus(), "loaignore": string(ignoreData), "memory": sessionMemories, "task_summaries": sessionSummaries, "artifacts": artifacts, "project_files": projectFiles})
 }
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	models, err := s.llm.Models(r.Context())
@@ -360,7 +362,7 @@ func (s *Server) handleReindex(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "files": len(s.getProjectFiles())})
 }
 func (s *Server) handleDebugDump(w http.ResponseWriter, r *http.Request) {
 	var in struct {
@@ -521,13 +523,50 @@ func (s *Server) handleSetupProject(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (s *Server) handleMemoryTree(w http.ResponseWriter, r *http.Request) {
-	if s.index == nil {
-		writeJSON(w, http.StatusOK, []string{})
-		return
+func (s *Server) liveOrDiskMemStore() *memory.Store {
+	if s.agent != nil && s.agent.MemStore() != nil {
+		return s.agent.MemStore()
 	}
-	files := s.index.Files()
-	writeJSON(w, http.StatusOK, files)
+	memStore := memory.NewStore(s.root, s.cfg.Get().MemoryLTSDecayHalfLifeHours, s.cfg.Get().MemoryLTSMaxWeight)
+	_ = memStore.Load()
+	return memStore
+}
+
+func (s *Server) getProjectFiles() []string {
+	seen := make(map[string]bool)
+	if s.index != nil {
+		for _, f := range s.index.Files() {
+			clean := filepath.ToSlash(filepath.Clean(f))
+			if clean != "" && clean != "." {
+				seen[clean] = true
+			}
+		}
+	}
+	if memStore := s.liveOrDiskMemStore(); memStore != nil {
+		for _, item := range memStore.Items() {
+			if item.Kind == state.MemoryStructural {
+				for _, anchor := range item.Anchors {
+					clean := filepath.ToSlash(filepath.Clean(anchor))
+					if clean == "" || clean == "." {
+						continue
+					}
+					if _, err := os.Stat(filepath.Join(s.root, filepath.FromSlash(clean))); err == nil {
+						seen[clean] = true
+					}
+				}
+			}
+		}
+	}
+	files := make([]string, 0, len(seen))
+	for f := range seen {
+		files = append(files, f)
+	}
+	sort.Strings(files)
+	return files
+}
+
+func (s *Server) handleMemoryTree(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.getProjectFiles())
 }
 
 func (s *Server) handleMemoryFile(w http.ResponseWriter, r *http.Request) {
@@ -540,22 +579,17 @@ func (s *Server) handleMemoryFile(w http.ResponseWriter, r *http.Request) {
 	var syms []index.Symbol
 	var frames []state.MemoryItem
 
+	memStore := s.liveOrDiskMemStore()
 	if path == "__GLOBAL__" {
-		if s.store != nil {
-			memStore := memory.NewStore(s.root, s.cfg.Get().MemoryLTSDecayHalfLifeHours, s.cfg.Get().MemoryLTSMaxWeight)
-			if err := memStore.Load(); err == nil {
-				frames = memStore.GlobalMemories()
-			}
+		if memStore != nil {
+			frames = memStore.GlobalMemories()
 		}
 	} else {
 		if s.index != nil {
 			syms = s.index.SymbolsForFile(path)
 		}
-		if s.store != nil {
-			memStore := memory.NewStore(s.root, s.cfg.Get().MemoryLTSDecayHalfLifeHours, s.cfg.Get().MemoryLTSMaxWeight)
-			if err := memStore.Load(); err == nil {
-				frames = memStore.FileMemories(path)
-			}
+		if memStore != nil {
+			frames = memStore.FileMemories(path)
 		}
 	}
 
@@ -587,8 +621,8 @@ func (s *Server) handleMemoryFrame(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	memStore := memory.NewStore(s.root, s.cfg.Get().MemoryLTSDecayHalfLifeHours, s.cfg.Get().MemoryLTSMaxWeight)
-	if err := memStore.Load(); err != nil {
+	memStore := s.liveOrDiskMemStore()
+	if memStore == nil {
 		writeErr(w, http.StatusInternalServerError, "failed to load store")
 		return
 	}
@@ -707,8 +741,7 @@ func (s *Server) handleMemoryDelete(w http.ResponseWriter, r *http.Request) {
 		_ = sessionMem.DeleteMemory(req.ID)
 	}
 
-	memStore := memory.NewStore(s.root, s.cfg.Get().MemoryLTSDecayHalfLifeHours, s.cfg.Get().MemoryLTSMaxWeight)
-	if err := memStore.Load(); err == nil {
+	if memStore := s.liveOrDiskMemStore(); memStore != nil {
 		_ = memStore.DeleteMemory(req.ID)
 	}
 
@@ -735,8 +768,7 @@ func (s *Server) handleMemoryEdit(w http.ResponseWriter, r *http.Request) {
 		_ = sessionMem.UpdateMemory(req.ID, req.Text, emb, nil)
 	}
 
-	memStore := memory.NewStore(s.root, s.cfg.Get().MemoryLTSDecayHalfLifeHours, s.cfg.Get().MemoryLTSMaxWeight)
-	if err := memStore.Load(); err == nil {
+	if memStore := s.liveOrDiskMemStore(); memStore != nil {
 		_ = memStore.UpdateMemory(req.ID, req.Text, emb, nil)
 	}
 

@@ -66,7 +66,7 @@ The current wizard includes:
 - **`.loaignore`**
 - **START BOOT SCAN**
 
-`.loaignore` controls which paths are excluded from the crawler/watcher/indexing path. Choose it before the first boot scan for large repositories, because the crawler can generate model calls for unindexed source chunks.
+`.loaignore` controls which paths are excluded from the file/symbol index, crawler, and filesystem watcher (alongside Loa's built-in exclusions for hidden paths, dependency/build folders, and binary files). Because Loa indexes all non-ignored, non-empty UTF-8 text files—including symbol-less markdown, plain text, and configuration files—choose `.loaignore` before the first boot scan on large repositories to avoid unnecessary `NarrativeFrame` model calls.
 
 The project purpose is stored as project knowledge so the agent has a stable high-level description of the repository.
 
@@ -114,7 +114,7 @@ The right-side inspect pane is split into three top-level groups.
 
 - **WORKING MEMORY:** active task facts, decisions, constraints, open issues, and related task context.
 - **SESSION MEMORY:** session-scoped retrievable memories/task summaries.
-- **PROJECT MEMORY:** project-level persistent memories, including structural source memories produced by the crawler.
+- **PROJECT MEMORY:** project-level persistent memories and live-synced project file tree, including structural file memories produced by the crawler during Boot Scan, idle watcher auto-crawls, Just-In-Time memory retrieval, or task completion.
 
 #### OUTPUTS
 

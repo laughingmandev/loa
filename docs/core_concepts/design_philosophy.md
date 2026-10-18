@@ -28,7 +28,7 @@ The principles below describe the current implementation rather than a generic a
 - **The context window is not the memory store.** Persisted project memory, session memory, task state, tool results, artifacts, and source files remain separate from the prompt assembled for one inference.
 - **Original evidence is not recursively rewritten to fit the context window.** When material does not fit, the context builder selects/truncates what is injected. It does not repeatedly summarize the whole previous prompt into a new canonical version.
 - **Derived memories have explicit roles.** Narrative Frames, `StepResult` extraction, task summaries, refreshed task context, and consolidated semantic memories are derived representations used for retrieval/control. They do not erase the underlying source/task/tool records.
-- **Project structural memories are source-anchored.** The filesystem watcher can invalidate memories for changed files so they can be rebuilt from current source.
+- **Project structural memories are file-anchored.** The filesystem watcher and file tools invalidate memories for changed files, rebuilding them immediately in the background when Loa is idle or reconciling them lazily before memory retrieval and at task completion when a task is running.
 
 ## 4. Autonomy and Observability
 

@@ -172,17 +172,25 @@ When persisted session state is loaded after a restart, a task that had been sto
 
 Manual pause also cancels the active run and records the task as paused. Error paths can pause the task while preserving the DAG, tool records, messages, and other persisted state needed for inspection and recovery.
 
-## 11. Project Crawling and JIT Reconciliation
+## 11. Project Indexing, Crawling, and Reconciliation
 
-Loa's project memory is kept current through two related mechanisms:
+Loa's project structural memory (`MemoryStructural`) and UI file tree are kept current through the project index (`internal/index`), the synchronous LTM crawler (`RunCrawler`), and the filesystem watcher (`StartWatcher`):
 
-1. **Crawler:** indexes unindexed source chunks and generates structural memories.
-2. **Filesystem watcher:** detects project-file changes and marks affected files stale.
+1. **What Gets Indexed:**
+   - During `Index.Rebuild` and `Index.RefreshFile`, Loa runs Universal Ctags to extract AST/symbol boundaries and walks the project tree to include all non-ignored UTF-8 text files—even files for which `ctags` emits zero symbols (such as plain `.txt` files, configuration files, or `.md` files without headings).
+   - Built-in exclusions (hidden files/directories starting with `.`, `.loa`, `.loa.json`, `.loaignore`, `node_modules`, `vendor`, `dist`, `build`, `venv`, `target`, `coverage`, `loa`, `loa-sandbox`, and `.loa-write-*` temp files), user-defined `.loaignore` patterns, and binary files (detected via NUL-byte and UTF-8 checks on the first 8 KiB) are excluded from the index.
+   - Empty or whitespace-only text files are tracked in the file list but skipped by `RunCrawler` so placeholder files (e.g., `touch foo.txt`) do not trigger unnecessary LLM calls.
 
-The watcher does not immediately regenerate every memory item at the exact moment a file changes. It debounces filesystem events and marks files stale. To prevent ghost invalidations from race conditions (e.g., when the agent synchronously writes a file and the OS later fires an `fsnotify` event for that same write), Loa uses a `reconciledModTimes` heuristic that securely drops spurious watcher events by comparing disk modification times against the last known reconciliation.
+2. **When Indexing and Crawling Happen:**
+   - **Boot Scan (Startup / Project Setup):** On startup (or after completing the Project Setup Wizard), `BootScan` rebuilds the index, checks existing `MemoryStructural` anchors and CRC32 file hashes against disk, removes orphaned or outdated file memories, and runs `RunCrawler` for any unindexed files.
+   - **While Loa Is Idle (Immediate Background Crawl):** The `fsnotify` watcher monitors project directories (dynamically recursively registering newly created subdirectories and re-evaluating `.loaignore`). After the `fs_watcher_debounce_ms` window expires, affected paths are marked stale and evicted from the step read cache. If the engine is currently idle (`!running` and not awaiting initial project setup), Loa immediately locks the engine (`system_task_reason = "indexing"`) and repairs/crawls the stale files in the background so project memory and the UI file tree are up to date before the next prompt arrives.
+   - **While a Task Is Running (Lazy Marking + JIT Pre-Retrieval + Post-Task Flush):** When a Fast or Planned task is actively running, file mutations—whether performed through Loa's file tools (`write_file`, `patch_file`, `patch_ast_node`, `delete_file`, `delete_directory`) or detected on disk by `fsnotify`—only mark the affected files stale and invalidate the read cache. Loa deliberately avoids re-crawling a file on every intermediate write or patch within a step. Instead, pending stale files are reconciled at two boundaries:
+     1. **Just-In-Time Before Memory Retrieval (`retrieveMemoryRound`):** Whenever the engine is about to query memory (during pre-planning research, step-start keyword lookup, or an explicit `retrieve_memory` action), it flushes and re-crawls any pending stale files first so retrieval never searches stale structural frames.
+     2. **Task Finalization (`finishTask` / `fast_complete`):** After the final response is synthesized, any remaining stale files modified during the task are repaired and crawled in a single post-task batch.
 
-At engine reconciliation boundaries, stale file memories are removed, the code index is rebuilt as needed, and the crawler regenerates missing structural memories.
+3. **Ghost-Event Protection (`reconciledModTimes`):**
+   - To prevent duplicate crawls when an agent tool write is followed moments later by a delayed OS `fsnotify` event for that same write, Loa records each file's disk `ModTime` during reconciliation and ignores watcher events whose `ModTime` is not newer than the last reconciled timestamp.
 
-The crawler itself is synchronous with respect to Loa's model calls: it locks the engine's inference path while generating Narrative Frames/keywords for code chunks. This avoids overlapping crawler inference with task inference, but it also means crawling can be inference-intensive.
+The crawler itself is synchronous with respect to Loa's model calls: it holds the engine lock while generating `NarrativeFrame` and `ExtractKeywords` inferences and embeddings for each chunk. This prevents crawler inference from colliding with task inference.
 
-See [Memory System](memory_system.md) for the crawler's current storage model.
+See [Memory System](memory_system.md) for the crawler's chunking and storage model.
