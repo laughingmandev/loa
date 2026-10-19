@@ -21,11 +21,12 @@ import (
 )
 
 type scriptedLLM struct {
-	mu   sync.Mutex
-	json []string
-	text string
-	inf  uint64
-	emb  uint64
+	mu            sync.Mutex
+	json          []string
+	text          string
+	inf           uint64
+	emb           uint64
+	embeddedTexts []string
 }
 
 func (f *scriptedLLM) Models(context.Context) ([]string, error) { return []string{"fake"}, nil }
@@ -91,10 +92,11 @@ func (f *scriptedLLM) ChatText(ctx context.Context, model string, sys string, pr
 	f.inf++
 	return f.text, nil
 }
-func (f *scriptedLLM) Embed(context.Context, string) ([]float32, error) {
+func (f *scriptedLLM) Embed(_ context.Context, text string) ([]float32, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.emb++
+	f.embeddedTexts = append(f.embeddedTexts, text)
 	return []float32{1, 0}, nil
 }
 func (f *scriptedLLM) Stats() state.RuntimeStats {
@@ -1006,3 +1008,61 @@ func (m *mockPrimitiveContext) BuildPrompt(req primitives.PromptRequest) (string
 }
 func (m *mockPrimitiveContext) Log(kind state.LogKind, primitive, summary, input, raw string) {}
 func (m *mockPrimitiveContext) RecordInference(primitive string, isRepair bool)               {}
+
+func TestEmbeddingOnlyUsesExtractedKeywords(t *testing.T) {
+	root := t.TempDir()
+	cfgv := config.Default()
+	cfgv.ModelConversation = "fake"
+	cfgv.EmbeddingEngine = "openapi"
+	cfgv.EmbeddingModel = "fake-embed"
+	cfg := config.NewManager(cfgv)
+	st := state.NewStore(root, state.NewAgentState())
+	_, err := st.CreateSession("Embed keywords test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	memStore := memory.NewStore(root, 336.0, 0.03)
+	fake := &scriptedLLM{
+		json: []string{
+			// 1. addMemory with empty index_keys -> should NOT call Embed
+			`{"index_keys":[]}`,
+			// 2. addMemory with extracted keywords -> should call Embed with "price stock parser"
+			`{"index_keys":["price","stock","parser"]}`,
+			// 3. runTask prefetchDiscussionMemory -> ExtractKeywords on raw goal
+			`{"index_keys":["price","stock"]}`,
+			// 4. PlanResearch ready_to_plan
+			`{"action":"ready_to_plan","reason":"ready"}`,
+			// 5. AcceptanceCriteria
+			`{"criteria":["Check price stock parser."],"reason":"done"}`,
+			`{"mappings":[]}`,
+			// 6. CreateInitialPlan
+			`{"target":"price stock parser"}`,
+			`{"version":1,"steps":[{"title":"Inspect parser","goal":"inspect parser","reason":"check","expected_result":"inspected","mode":"modify","depends_on":[],"expected_tools":[]}],"reason":"plan"}`,
+			`{"tags":[{"step_id":1,"entities":["parser"]}]}`,
+			`{"valid":true,"reason":"ok","coverage":[{"criterion_id":1,"step_ids":[__FIRST_PLAN_STEP_ID__],"reason":"covered"}],"issues":[]}`,
+		},
+	}
+	eng := New(root, st, memStore, cfg, fake, tools.New(root, nil, cfg.Get, nil), nil)
+
+	// 1. When ExtractKeywords returns empty index_keys, addMemory must NOT embed the raw text.
+	eng.addMemory(context.Background(), state.MemoryStructural, "RAW_UNFILTERED_TEXT_SHOULD_NEVER_BE_EMBEDDED", nil, nil, state.MessageUser)
+	if len(fake.embeddedTexts) != 0 {
+		t.Fatalf("expected 0 Embed calls when index_keys is empty, got %v", fake.embeddedTexts)
+	}
+
+	// 2. When ExtractKeywords returns index_keys, addMemory embeds only the joined keywords.
+	eng.addMemory(context.Background(), state.MemoryStructural, "Full narrative frame about price stock parser", nil, nil, state.MessageUser)
+	if len(fake.embeddedTexts) != 1 || fake.embeddedTexts[0] != "price stock parser" {
+		t.Fatalf("expected Embed to receive only joined keywords 'price stock parser', got %v", fake.embeddedTexts)
+	}
+
+	// 3. When runTask starts with a huge raw user goal, it extracts keywords first and embeds only those keywords.
+	hugeRawGoal := "HUGE_RAW_USER_GOAL_TEXT_THAT_MUST_NOT_GO_TO_EMBEDDER " + strings.Repeat("word ", 500)
+	if err := eng.runTask(context.Background(), hugeRawGoal, true, "Test Task", "Planned"); err != nil {
+		t.Fatalf("runTask failed: %v", err)
+	}
+	if len(fake.embeddedTexts) != 2 || fake.embeddedTexts[1] != "price stock" {
+		t.Fatalf("expected runTask to embed only extracted keywords 'price stock', got %v", fake.embeddedTexts)
+	}
+}
+

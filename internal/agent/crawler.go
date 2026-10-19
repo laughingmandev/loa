@@ -79,11 +79,10 @@ func (e *Engine) RunCrawler(ctx context.Context) error {
 			}
 
 			// Create Embedding
-			embedText := frame.Frame
+			var emb []float32
 			if len(ext.IndexKeys) > 0 {
-				embedText = strings.Join(ext.IndexKeys, " ")
+				emb, _ = e.tryEmbed(ctx, strings.Join(ext.IndexKeys, " "))
 			}
-			emb, _ := e.tryEmbed(ctx, embedText)
 
 			// Save to LTM
 			e.memStore.AddMemory(state.MemoryItem{

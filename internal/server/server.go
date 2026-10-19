@@ -637,15 +637,14 @@ func (s *Server) handleMemoryFrame(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	embedText := req.Text
+	var emb []float32
 	if len(ext.IndexKeys) > 0 {
-		embedText = strings.Join(ext.IndexKeys, " ")
-	}
-
-	emb, err := s.llm.Embed(r.Context(), embedText)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "failed to embed text: "+err.Error())
-		return
+		var embErr error
+		emb, embErr = s.agent.TryEmbed(r.Context(), strings.Join(ext.IndexKeys, " "))
+		if embErr != nil {
+			writeErr(w, http.StatusInternalServerError, "failed to embed keywords: "+embErr.Error())
+			return
+		}
 	}
 
 	if req.ID > 0 {
@@ -758,18 +757,31 @@ func (s *Server) handleMemoryEdit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	emb, err := s.llm.Embed(r.Context(), req.Text)
+	var ext struct {
+		IndexKeys []string `json:"index_keys"`
+	}
+	sysPrompt := `Analyze the provided narrative frame or memory text. Extract a concise list of the most important structural and semantic keywords, concept names, identifiers, or file paths that represent its core meaning. These keys will be used for vector embedding and retrieval.`
+	_, err := s.llm.ChatJSON(r.Context(), s.cfg.Get().ModelCrawling, sysPrompt, func(repairCost int) (string, error) { return req.Text, nil }, &ext, nil)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "failed to embed text: "+err.Error())
+		writeErr(w, http.StatusInternalServerError, "failed to extract keywords: "+err.Error())
 		return
 	}
 
+	var emb []float32
+	if len(ext.IndexKeys) > 0 {
+		emb, err = s.agent.TryEmbed(r.Context(), strings.Join(ext.IndexKeys, " "))
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "failed to embed keywords: "+err.Error())
+			return
+		}
+	}
+
 	if sessionMem := s.agent.SessionMemStore(); sessionMem != nil {
-		_ = sessionMem.UpdateMemory(req.ID, req.Text, emb, nil)
+		_ = sessionMem.UpdateMemory(req.ID, req.Text, emb, ext.IndexKeys)
 	}
 
 	if memStore := s.liveOrDiskMemStore(); memStore != nil {
-		_ = memStore.UpdateMemory(req.ID, req.Text, emb, nil)
+		_ = memStore.UpdateMemory(req.ID, req.Text, emb, ext.IndexKeys)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
