@@ -689,8 +689,8 @@ func (e *Engine) runTask(ctx context.Context, goal string, mayModify bool, title
 	e.store.SetActiveTask(task)
 
 	planningExtras := []string{}
-	if e.cfg.Get().EmbeddingEngine == "local" || e.cfg.Get().EmbeddingModel != "" {
-		if cands, err := e.retrieveMemory(ctx, goal, nil); err == nil && len(cands) > 0 {
+	if e.canEmbed() {
+		if cands, err := e.prefetchDiscussionMemory(ctx, goal, nil); err == nil && len(cands) > 0 {
 			planningExtras = append(planningExtras, "RELEVANT PRIOR MEMORY FOR PLANNING:\n"+cands)
 		}
 	}
@@ -2243,12 +2243,10 @@ func (e *Engine) finalizeTaskMemory(ctx context.Context, snap state.AgentState, 
 		e.log(state.LogSystem, "ExtractKeywords", "keyword extraction failed for summary", summary.Summary, err.Error())
 	}
 
-	embedText := summary.Summary
+	var emb []float32
 	if len(ext.IndexKeys) > 0 {
-		embedText = strings.Join(ext.IndexKeys, " ")
+		emb, _ = e.tryEmbed(ctx, strings.Join(ext.IndexKeys, " "))
 	}
-
-	emb, _ := e.tryEmbed(ctx, embedText)
 	summaryItem := state.TaskSummary{TaskID: snap.ActiveTask.ID, Summary: summary.Summary, IndexKeys: ext.IndexKeys, Embedding: emb, CreatedAt: time.Now()}
 	if sStore := e.SessionMemStore(); sStore != nil {
 		sStore.AddSummary(summaryItem)

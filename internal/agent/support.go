@@ -301,12 +301,10 @@ func (e *Engine) addMemory(ctx context.Context, kind state.MemoryKind, text stri
 		e.log(state.LogSystem, "ExtractKeywords", "keyword extraction failed", text, err.Error())
 	}
 
-	embedText := text
+	var emb []float32
 	if len(ext.IndexKeys) > 0 {
-		embedText = strings.Join(ext.IndexKeys, " ")
+		emb, _ = e.tryEmbed(ctx, strings.Join(ext.IndexKeys, " "))
 	}
-
-	emb, _ := e.tryEmbed(ctx, embedText)
 	snap := e.store.Snapshot()
 	var taskID *uint64
 	if snap.ActiveTask != nil {
@@ -324,27 +322,43 @@ func (e *Engine) addMemory(ctx context.Context, kind state.MemoryKind, text stri
 		}
 	}
 }
+
+func (e *Engine) ensureLocalEmbedder() embedder.Embedder {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	path := e.cfg.Get().LocalEmbeddingModelPath
+	if path != "" && path != e.loadedLocalEmbeddingModelPath {
+		if e.localEmbedder != nil {
+			e.localEmbedder.Close()
+			e.localEmbedder = nil
+		}
+		emb, err := embedder.NewLocalEmbedder(path)
+		if err == nil {
+			e.localEmbedder = emb
+			e.loadedLocalEmbeddingModelPath = path
+		} else {
+			e.log(state.LogSystem, "Init", "lazy loading local embedder failed", path, err.Error())
+		}
+	}
+	return e.localEmbedder
+}
+
+func (e *Engine) canEmbed() bool {
+	cfg := e.cfg.Get()
+	if cfg.EmbeddingEngine == "local" {
+		return e.ensureLocalEmbedder() != nil
+	}
+	return cfg.EmbeddingModel != ""
+}
+
+func (e *Engine) TryEmbed(ctx context.Context, text string) ([]float32, error) {
+	return e.tryEmbed(ctx, text)
+}
+
 func (e *Engine) tryEmbed(ctx context.Context, text string) ([]float32, error) {
 	if e.cfg.Get().EmbeddingEngine == "local" {
-		e.mu.Lock()
-		path := e.cfg.Get().LocalEmbeddingModelPath
-		if path != "" && path != e.loadedLocalEmbeddingModelPath {
-			if e.localEmbedder != nil {
-				e.localEmbedder.Close()
-				e.localEmbedder = nil
-			}
-			emb, err := embedder.NewLocalEmbedder(path)
-			if err == nil {
-				e.localEmbedder = emb
-				e.loadedLocalEmbeddingModelPath = path
-			} else {
-				e.log(state.LogSystem, "Init", "lazy loading local embedder failed", path, err.Error())
-			}
-		}
-		e.mu.Unlock()
-
-		if e.localEmbedder != nil {
-			emb, err := e.localEmbedder.Embed(text)
+		if localEmb := e.ensureLocalEmbedder(); localEmb != nil {
+			emb, err := localEmb.Embed(text)
 			if err == nil {
 				e.localEmbeddings.Add(1)
 			}
